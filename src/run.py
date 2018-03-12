@@ -10,9 +10,9 @@ import torch.optim as optim
 from torch.autograd import Variable
 import matplotlib.pyplot as plt
 
-from test.evaluate import test_binary_classification 
+from ml.test import test_binary_classification 
 from data.generate import RandomLPDataset
-from models.s2v import Model
+from ml.models.s2v import Model
 
 def train_net(net, criterion, optimizer, trainloader, num_epochs):
     losses  = []

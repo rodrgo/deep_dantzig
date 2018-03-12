@@ -44,6 +44,8 @@ class Model(nn.Module):
                 mu_[Ncr(v)].sum() == C2         for some constant vector C2
         '''
 
+        self.toch_version = torch.__version__ 
+
         # Types
         # @params
         # Problem is of dimension (m,n)
@@ -117,7 +119,10 @@ class Model(nn.Module):
         def f(u):
             # Build vectors and normalise
             if u < self.m:
-                vec = torch.cat((A[:,u,0:self.n], b[:,u]), 1)
+                if self.torch_version == '0.3.0.post4': 
+                    vec = torch.cat((A[:,u,0:self.n], b[:,u]), 1)
+                else:
+                    vec = torch.cat((A[:,u,0:self.n], b[:,u].unsqueeze(0)), 1)
                 vec.div_(torch.norm(vec, 2)) 
                 return vec 
             else:

@@ -14,11 +14,11 @@ from torch.autograd import Variable
 from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
 
-from train.sgd import train_net
-from test.evaluate import test_binary_classification 
+from ml.train import train_net
+from ml.test import test_binary_classification 
+from ml.models.s2v import Model
+from utils.plot import s2v_loss_grid
 from data.generate import RandomLPDataset
-from models.s2v import Model
-from visualize.plot import s2v_loss_grid
 
 def main():
 
@@ -77,6 +77,7 @@ def main():
 
             # record
             d           = {}
+            d['lp']     = {'m': m, 'n': n, 'p': p}
             d['seed']   = seed 
             d['bs']     = bs
             d['T']      = t

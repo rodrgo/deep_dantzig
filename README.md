@@ -1,3 +1,3 @@
-# Meta-LP
+# Deep-Dantzig
 
-Solving linear programs by reducing the dimensionality of the data
+Neural network classifier of active constraints in Linear Programming.
