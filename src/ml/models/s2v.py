@@ -44,7 +44,7 @@ class Model(nn.Module):
                 mu_[Ncr(v)].sum() == C2         for some constant vector C2
         '''
 
-        self.toch_version = torch.__version__ 
+        self.torch_version = torch.__version__ 
 
         # Types
         # @params

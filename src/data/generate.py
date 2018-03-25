@@ -7,6 +7,8 @@ import math
 import random
 import sys
 
+from data.gurobi_lp import LinProg
+
 class RandomLPDataset(Dataset):
     '''
     Let (A, b, c) be an LP problem of the form
@@ -37,7 +39,7 @@ class RandomLPDataset(Dataset):
         # Generate 'num_lps' problems
         num_lps         = 1
         step            = np.random.randint(1, 1000) 
-        self._seeds     = [num_lps + i*step for i in range(num_lps)]
+        self._seeds     = [seed + i*step for i in range(num_lps)]
         self._problems  = self._generate_problems()
         self._index     = [] # Lists num_lps*m restrictions
         self._populate_index()
@@ -82,9 +84,10 @@ class RandomLPDataset(Dataset):
         actives   = [x for x in points if x['active']]
         inactives = [x for x in points if not x['active']]
         # Replicate to have class balance 
-        if self.test_mode:
+        if len(actives) == len(inactives):
             self._index = points 
         else:
+            print('************* class inbalance *************')
             self._index = len(actives)*inactives + len(inactives)*actives 
 
     @staticmethod
@@ -98,23 +101,37 @@ class RandomLPDataset(Dataset):
             st      A_ub*x <= b_ub
                     A_eq*x == b_eq
         '''
-        def threshold(x):
-            x[np.abs(x)<=1e-7] = 0
-            return x
-        if seed:
-            np.random.seed(seed)
+        def reseed(seed):
+            if not seed is None:
+                np.random.seed(seed)
+            return
         # Generate initial data
-        A = np.random.rand(m, n)
-        b = np.square(np.random.rand(m) + 1)
-        c = np.random.uniform(low=-1.0,high=1.0,size=n)
+        reseed(seed)
+        A = np.random.randn(m, n)
+        b = A.dot(np.random.randn(n)) + np.absolute(np.random.randn(m))
+        c = np.absolute(np.random.randn(n))
         # Solve for x
-        sol = linprog(c=c, A_ub=A, b_ub=b, A_eq=None, b_eq=None, bounds=None)
-        if not sol.success:
+        lp = LinProg(A, b, c)
+        lp.optimize()
+        s = lp.get_statuscode()
+        if not s in [1, 2]:
             print('WARNING: Linear program did not succeed!')
         # Get active constraints
-        x = sol.x
-        active = (threshold(b-A.dot(x)) == 0).nonzero()[0]
+        active = lp.get_active_constraints()
         assert(len(active) > 0) # There must be at least one active
         prob = {'A': A, 'b': b, 'c': c, 'active': active}
         return prob
+
+def main():
+    # Problem Params
+    n  = 5 
+    m  = 10
+    seed = 0
+
+    prob = RandomLPDataset.create_lp_problem(m, n, seed)
+    print(prob)
+    print('%d actives out of %d' % (len(prob['active']), m))
+
+if __name__ == '__main__':
+    main()
 

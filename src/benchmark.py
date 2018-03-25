@@ -28,6 +28,7 @@ def main():
     dotenv.load_dotenv(dotenv.find_dotenv())
     root     = os.environ.get('ROOT')
     figspath = os.path.join(root, 'figs')
+    outpath  = os.path.join(root, 'data/output')
 
     # ----------------
     # params
@@ -42,10 +43,10 @@ def main():
     N  = 2000
 
     # Opt Params
-    num_epochs      = 5
+    num_epochs      = 8
 
     # Varying Params
-    seeds   = [i for i in range(2)]
+    seeds   = [0, 3]
     bss     = [1, 5, 10]            # Batch size
     ts      = [0, 2, 4]             # Rounds of s2v
     lrs     = [0.01, 0.001]         # Learning rates
@@ -92,7 +93,8 @@ def main():
             # Append results
             results.append(d)
 
-    with open('results/benchmark.json', 'w') as outfile:
+    fpath = os.path.join(outpath, 'benchmark.json')
+    with open(fpath, 'w') as outfile:
         json.dump(results, outfile)
 
 if __name__ == '__main__':
