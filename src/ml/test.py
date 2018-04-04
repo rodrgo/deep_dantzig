@@ -1,9 +1,11 @@
 
 import torch
 from torch.autograd import Variable
+from ml.types import LongTensor
 import numpy as np
 
-def test_binary_classification(testloader, net, verbose=False):
+def test_binary_classification(testloader, net, verbose=False, cuda=False):
+    net.eval()
     correct = 0
     total   = 0
     for data in testloader:
@@ -12,13 +14,17 @@ def test_binary_classification(testloader, net, verbose=False):
         data_y  = data['y']
 
         # True label
-        labels  = Variable(data_y.type(torch.LongTensor))
+        labels  = Variable(LongTensor(data_y, cuda=cuda))
+        if cuda:
+            labels = labels.cpu()
         y       = labels.data.numpy()[0]
 
         # Predicted label
         outputs      = net(data_x)
         _, predicted = torch.max(outputs.data, 1)
         total        = total + labels.size(0)
+        if cuda: 
+            predicted = predicted.cpu()
         yhat         = predicted.numpy()[0]
         correct      = correct + (yhat == y).sum()
 

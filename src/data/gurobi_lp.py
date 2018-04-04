@@ -4,7 +4,7 @@ import numpy as np
 
 class LinProg(object): 
 
-    def __init__(self, A, b, c, obj='min'):
+    def __init__(self, A, b, c, obj='min', ops=None):
         self.A      = A
         self.m      = A.shape[0]
         self.n      = A.shape[1]
@@ -13,8 +13,10 @@ class LinProg(object):
         self.c      = c
         self.x      = []
         self.obj    = obj
+        self.ops    = ops
         self.error_msg = 'Gurobi Error, it has been reported'
         self.model  = Model('lp')
+        self.model.setParam('OutputFlag', False) 
 
         # Construct
         self._add_variables()
@@ -44,17 +46,20 @@ class LinProg(object):
         return
 
     def _add_constraints(self):
-        op = '<='
         for i in range(self.m):
             name = 'a_%d' % (i) 
             ai   = self.A[i]
             bi   = self.b[i]
+            if self.ops:
+                op = self.ops[i]
+            else:
+                op = '<'
             try:
-                if op == '==':
+                if op == '=':
                     self.model.addConstr(self.dot(ai, self.x) == bi, name)
-                elif op == '<=':
+                elif op == '<':
                     self.model.addConstr(self.dot(ai, self.x) <= bi, name)
-                elif op == '>=':
+                elif op == '>':
                     self.model.addConstr(self.dot(ai, self.x) >= bi, name)
                 else:
                     raise ValueError

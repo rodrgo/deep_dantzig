@@ -12,9 +12,9 @@ class FileSystem(object):
     def _infer_location(self, loc):
         loc = loc.lower()
         if loc == 'figures':
-            fpath = os.path.join(self._root, 'results/figs')
-        elif loc == 'outputs':
-            fpath = os.path.join(self._root, 'results/outputs')
+            fpath = os.path.join(self._root, 'data/figs')
+        elif loc == 'output':
+            fpath = os.path.join(self._root, 'data/output')
         else:
             try:
                 with open(loc, 'x') as tmpfile:

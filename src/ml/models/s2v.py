@@ -8,11 +8,13 @@ import numpy as np
 
 class Model(nn.Module):
 
-    dtype = torch.FloatTensor
-    #dtype = torch.cuda.FloatTensor
-
-    def __init__(self, m, n, p, T):
+    def __init__(self, m, n, p, T, cuda=False):
         super(Model, self).__init__()
+        self.with_cuda = cuda 
+        if self.with_cuda:
+            self.dtype = torch.cuda.FloatTensor
+        else:
+            self.dtype = torch.FloatTensor
         '''
         This implements a variation of the structure2vec 
         message passing procedure, presented in
@@ -112,6 +114,10 @@ class Model(nn.Module):
         # -------------------
         self.theta8 = nn.Linear(2*p, 2)
 
+    def require_grads(self, req=True):
+        for param in self.parameters():
+            param.requires_grad = req
+
     def _s2v(self, A, b, c, z, mu):
         '''
         structure2vec
@@ -130,6 +136,8 @@ class Model(nn.Module):
                 vec.div_(torch.norm(vec, 2)) 
                 return vec
 
+        scale = lambda x : 1/(x)
+
         Nrr  = lambda v    : [w for w in range(self.m) if w != v]
         Nrc  = lambda v    : [self.m]
         Ncr  = lambda v    : list(range(self.m))
@@ -142,6 +150,7 @@ class Model(nn.Module):
                 rr = Nrr(v) # rows to rows
                 rc = Nrc(v) # rows to cost
                 cr = Ncr(v) # cost to rows
+
                 # term1: Isolated term
                 if v < self.m:
                     term1 = torch.mm(self.theta1r, torch.t(f(z)))
@@ -150,16 +159,18 @@ class Model(nn.Module):
                 # term2: Linear transformations
                 if v < self.m:
                     term2rr = torch.mm(self.theta2rr, mu_[:,[v]].sum(dim=1).unsqueeze(1))
-                    term2rc = torch.mm(self.theta2rc, mu_[:, rc].sum(dim=1).unsqueeze(1))
+                    term2rc = torch.mm(self.theta2rc, scale(len(rc)) * mu_[:, rc].sum(dim=1).unsqueeze(1))
                     term2   = term2rr + term2rc
                 else:
-                    term2   = torch.mm(self.theta2cr, mu_[:, cr].sum(dim=1).unsqueeze(1))
+                    term2   = torch.mm(self.theta2cr, scale(len(cr)) * mu_[:, cr].sum(dim=1).unsqueeze(1))
+
                 # term3: Non-linear transformations
                 if v < self.m:
                     # term3rr
                     term3rr = Variable(torch.zeros(self.p,1).type(self.dtype))
                     for u in rr:
                         term3rr = term3rr + F.relu(self.theta4rr * w(v,u))
+                    term3rr = scale(len(rr)) * term3rr
                     term3rr = torch.mm(self.theta3rr, term3rr)
                     # term3rc
                     u = rc[0] # only one element, self.m
@@ -171,6 +182,7 @@ class Model(nn.Module):
                     term3cr = Variable(torch.zeros(self.p,1).type(self.dtype))
                     for u in cr:
                         term3cr = term3cr + F.relu(self.theta4cr * w(v,u))
+                    term3cr = scale(len(cr)) * term3cr
                     term3cr = torch.mm(self.theta3cr, term3cr)
                     # term3
                     term3 = term3cr
@@ -179,12 +191,12 @@ class Model(nn.Module):
         # Pool embeddings        
         # term6
         cols   = range(self.m)
-        term6r = torch.mm(self.theta6r, torch.t(torch.sum(mu[:,  cols  ],dim=1).unsqueeze(0)))
+        term6r = torch.mm(self.theta6r, torch.t(scale(len(cols)) * torch.sum(mu[:,cols],dim=1).unsqueeze(0)))
         term6c = torch.mm(self.theta6c, torch.t(torch.sum(mu[:,[self.m]],dim=1).unsqueeze(0)))
         term6  = term6r + term6c
         # term7 
         term7      = torch.mm(self.theta7, torch.transpose(mu[:,z].unsqueeze(0),0,1))
-        feature_z  = torch.t(F.sigmoid(torch.cat((term6,term7),0)))
+        feature_z  = torch.t(torch.cat((term6,term7),0))
         return feature_z
 
     def forward(self, data_x):
@@ -192,10 +204,29 @@ class Model(nn.Module):
         Forward pass
         '''
         # get inputs
-        A   = Variable(data_x['A'].type(self.dtype))
-        b   = Variable(data_x['b'].type(self.dtype))
-        c   = Variable(data_x['c'].type(self.dtype))
-        row = Variable(data_x['i'].type(self.dtype))
+        A   = data_x['A'].type(self.dtype)
+        b   = data_x['b'].type(self.dtype)
+        c   = data_x['c'].type(self.dtype)
+        row = data_x['i'].type(self.dtype)
+
+        # Normalise restrictions
+        max_A  = A.abs().max()
+        max_b  = b.abs().max()
+        max_Ab = max(max_A, max_b)   
+        A = A / max_Ab
+        b = b / max_Ab
+        c = c / c.abs().max()
+
+        if self.with_cuda:
+            A   = A.cuda()
+            b   = b.cuda()
+            c   = c.cuda()
+            row = row.cuda()
+
+        A   = Variable(A)
+        b   = Variable(b)
+        c   = Variable(c)
+        row = Variable(row)
 
         # Extract row value 
         r = int(row.data)
