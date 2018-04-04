@@ -49,7 +49,7 @@ def plot_in_visdom(vis, results):
                         text=None, name=params2name(params))
             traces.append(trace)
         # title
-        dataset = params['dataset']
+        dataset = rs[0]['dataset']
         params_rename = {'batch_size': 'bs', 'learning_rate': 'lr', 'momentum': 'mtm', 'num_epochs': 'epochs', 'weight_decay': 'wd'}
         params = {params_rename[k]:v for k,v in params.items() if k in params_rename}
         uniques = [params_rename[k] for k in uniques if k in params_rename]
@@ -63,14 +63,14 @@ def plot_in_visdom(vis, results):
         layout = dict(title=title, xaxis=xaxis, yaxis={'type': 'log', 'title': 'loss'})
         return traces, layout
 
-    select = lambda x, s, lr, bs: x['seed'] == s and x['learning_rate'] == lr and x['batch_size'] == bs
-    seeds  = list(set([r['params']['seed'] for r in results]))
+    select = lambda x, s, lr, bs: x['seed'] == s and x['params']['learning_rate'] == lr and x['params']['batch_size'] == bs
+    seeds  = list(set([r['seed'] for r in results]))
     for seed in seeds:
         # Ideally we should do one grid per seed
         hvals = list(set([r['params']['learning_rate'] for r in results]))
         vvals = list(set([r['params']['batch_size'] for r in results]))
         for w, (hval, vval) in enumerate(zip(hvals, vvals)):
-            rs = [r for r in results if select(r['params'], seed, hval, vval)]
+            rs = [r for r in results if select(r, seed, hval, vval)]
             # Running loss
             traces, layout = build_traces(rs, 'running')
             vis._send({'data': traces, 'layout': layout, 'win': 'win_run_%d_%d' % (w, seed)})
@@ -82,7 +82,7 @@ def plot_in_visdom(vis, results):
 def main():
 
     loc     = 'output'
-    tag     = 'randomlp_params'
+    tag     = 'benchmark_randomlp_res'
 
     fs      = FileSystem()
     fpath 	= fs._infer_location(loc)
@@ -90,7 +90,8 @@ def main():
 
     results = []
     for fname in fnames:
-        results.append(fs.read_json(loc, fname))
+        res = fs.read_json(loc, fname)
+        results.append(res)
 
     vis = visdom.Visdom()
     plot_in_visdom(vis, results)

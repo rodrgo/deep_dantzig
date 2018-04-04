@@ -233,7 +233,7 @@ class Model(nn.Module):
 
         # [0, ..., m-1] : constraints 
         # [m]           : cost vector
-        row_initialise = True
+        row_initialise = False
         if row_initialise:
             '''
             mu has dimensions (p, m+1)

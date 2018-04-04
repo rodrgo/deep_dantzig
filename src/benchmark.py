@@ -1,12 +1,12 @@
 import dotenv
 import hashlib
+import itertools
 import json
 import math
 import numpy as np
 import os
 import pandas as pd
 import sys
-import itertools
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -25,24 +25,26 @@ from utils.plot import s2v_loss_grid
 from data.randomlp_dataset import RandomLPDataset
 from data.plnn_dataset import DatasetPLNN
 
-def save(data, model, save_path):
+def save(save_path, stype, res, model=None):
     # Build filename
-    tag   = data['params']['dataset']
-    s     = json.dumps(data['params'], sort_keys=True)
+    dset  = res['dataset']
+    s     = json.dumps(res, sort_keys=True)
     stamp = hashlib.sha1(s.encode()).hexdigest()
     stamp = stamp[0:11] # Keep only 10 chars in stamp
     # Save data
-    fname = '%s_params_%s.json' % (tag, stamp)
-    fpath = os.path.join(save_path, fname)
-    with open(fpath, 'w') as outfile:
-        json.dump(data, outfile)
+    if not res is None:
+        fname = '%s_%s_res_%s.json' % (stype, dset, stamp)
+        fpath = os.path.join(save_path, fname)
+        with open(fpath, 'w') as outfile:
+            json.dump(res, outfile)
     # Save model
-    fname = '%s_model_%s.json' % (tag, stamp)
-    fpath = os.path.join(save_path, fname)
-    torch.save(model.state_dict(), fpath)
+    if not model is None:
+        fname = '%s_%s_model_%s.json' % (stype, dset, stamp)
+        fpath = os.path.join(save_path, fname)
+        torch.save(model.state_dict(), fpath)
     return
 
-def dataset_factory(dataset, seed='1111'):
+def dataset_factory(dataset, seed):
     if dataset == 'plnn':
         trainset = DatasetPLNN(num_lps=1, test=False, seed=seed)
         testset  = DatasetPLNN(num_lps=1, test=True , seed=seed)
@@ -54,37 +56,32 @@ def dataset_factory(dataset, seed='1111'):
         raise ValueError('Dataset not recognised')
     return trainset, testset
 
-def run_experiment(params):
+def run_experiment(params, dataset, seed=1111, cuda=False, tag=None):
 
     # params
-    dataset = params['dataset']
-    seed    = params['seed']
+    epochs  = params['num_epochs']
     bs      = params['batch_size']
     t       = params['rounds_s2v']
     lr      = params['learning_rate']
     mtm     = params['momentum']
     wd      = params['weight_decay']
-    epochs  = params['num_epochs']
-    cuda    = params['cuda']
-
-    delta   = params['delta'] # p/(n+1)
+    p       = params['p']
 
     # datasets
     trainset, testset = dataset_factory(dataset, seed)
     trainloader = DataLoader(trainset, batch_size=bs, shuffle=True,  num_workers=1)
-    testloader  = DataLoader(testset,  batch_size =1, shuffle=False, num_workers=1)
+    testloader  = DataLoader(testset,  batch_size=1,  shuffle=False, num_workers=1)
 
     # Get params
     lp_params  = trainset.get_lp_params()
     assert(len(lp_params) == 1)
     m       = lp_params[0]['m'] 
     n       = lp_params[0]['n'] 
-    p       = int(float(n+1) * delta)
 
     # model
-    model         = Model(m, n, p, t, cuda=cuda)
+    model       = Model(m, n, p, t, cuda=cuda)
     if cuda:
-        model     = model.cuda()
+        model   = model.cuda()
 
     # optimization
     criterion   = nn.CrossEntropyLoss()
@@ -104,65 +101,42 @@ def run_experiment(params):
     d               = {}
     d['params']     = {k:v for k,v in params.items()}
     d['out']        = out
+    d['dataset']    = dataset
+    d['seed']       = seed
+    d['cuda']       = cuda
+    d['tag']        = tag
 
     return d, model
 
-def wrap_params(ds, seed, bs, t, lr, mtm, wd, epochs, delta, cuda):
+def wrap_params(ep, bs, t, lr, mtm, wd, p):
     params = {}
-    params['dataset']       = ds
-    params['seed']          = seed
+    params['num_epochs']    = ep
     params['batch_size']    = bs
     params['rounds_s2v']    = t
     params['learning_rate'] = lr
     params['momentum']      = mtm
     params['weight_decay']  = wd
-    params['num_epochs']    = epochs
-    params['delta']         = delta
-    params['cuda']          = cuda
+    params['p']             = p
     return params
 
-def benchmark_single_randomlp(save_path, cuda=False):
+def run_benchmark(save_path, dataset, benchmark_params, cuda=False, tag=None):
 
     # Params
-    dataset = 'randomlp'
-    epochs  = 250
-    seeds   = [0, 3]
-    bss     = [1, 5]    	# Batch size
-    ts      = [0, 2, 4]     # Rounds of s2v
-    lrs     = [0.01, 0.001] # Learning rates
-    mtms    = [0.9]         # Momentums
-    wds     = [0]           # Weight decays
-
-    delta = 1.0
+    sds     = benchmark_params['seeds']
+    eps     = benchmark_params['epochs']
+    bss     = benchmark_params['batch_sizes']
+    ts      = benchmark_params['rounds_s2v']
+    lrs     = benchmark_params['learning_rates']
+    mtms    = benchmark_params['momentums']
+    wds     = benchmark_params['weight_decays']
+    ps      = benchmark_params['ps']
 
     # Benchmark 
-    for seed, bs, t, lr, mtm, wd in itertools.product(seeds, bss, ts, lrs, mtms, wds):
-        params = wrap_params(dataset, seed, bs, t, lr, mtm, wd, epochs, delta, cuda)
+    for seed, ep, bs, t, lr, mtm, wd, p in itertools.product(sds, eps, bss, ts, lrs, mtms, wds, ps):
+        params = wrap_params(ep, bs, t, lr, mtm, wd, p)
         print(','.join(['{0}={1}'.format(k,v) for k,v in params.items()]))
-        exp_params, model = run_experiment(params)
-        save(exp_params, model, save_path)
-    return
-
-def benchmark_single_plnn(save_path, cuda=False):
-
-    # Params
-    dataset = 'plnn'
-    epochs  = 250
-    seeds   = [3]
-    bss     = [1, 5]        # Batch size
-    ts      = [2]           # Rounds of s2v
-    lrs     = [0.01]        # Learning rates
-    mtms    = [0.9]         # Momentums
-    wds     = [0]           # Weight decays
-
-    delta = 1.0
-
-    # Benchmark 
-    for seed, bs, t, lr, mtm, wd in itertools.product(seeds, bss, ts, lrs, mtms, wds):
-        params = wrap_params(dataset, seed, bs, t, lr, mtm, wd, epochs, delta, cuda)
-        print(','.join(['{0}={1}'.format(k,v) for k,v in params.items()]))
-        exp_params, model = run_experiment(params)
-        save(exp_params, model, save_path)
+        res, model = run_experiment(params, dataset, seed, cuda, tag)
+        save(save_path, 'benchmark', res, model)
     return
 
 if __name__ == '__main__':
@@ -181,22 +155,49 @@ if __name__ == '__main__':
         action='store_true', help='Test on single PLNN problem')
     parser.add_argument('--cuda',
         action='store_true', default=False, help='Enable cuda')
+    parser.add_argument('--device',
+       default=0, help='Enable cuda')
+    parser.add_argument('--tag', '-t', 
+       default=None, help='Experiment tags')
 
     args = parser.parse_args()
+
+    # tag
+    tag = args.tag
 
     # cuda
     cuda = False
     if args.cuda:
+        device = int(args.device)
         if torch.cuda.is_available():
+            torch.cuda.set_device(device)
             cuda = True
         else:
             print('CUDA is not available')
 
     # randomlp
     if args.randomlp:
-        benchmark_single_randomlp(outpath, cuda)
+        bp = {}
+        bp['epochs']            = [250]
+        bp['seeds']             = [0, 3]
+        bp['batch_sizes']       = [1, 5]
+        bp['rounds_s2v']        = [0, 2, 4]
+        bp['learning_rates']    = [0.01, 0.001]
+        bp['momentums']         = [0.9]
+        bp['weight_decays']     = [0]
+        bp['ps']     			= [12]
+        run_benchmark(outpath, 'randomlp', bp, cuda, tag)
 
     # plnn
     if args.plnn:
-        benchmark_single_plnn(outpath, cuda)
+        bp = {}
+        bp['epochs']            = [250]
+        bp['seeds']             = [3]
+        bp['batch_sizes']       = [1, 5]
+        bp['rounds_s2v']        = [2]
+        bp['learning_rates']    = [0.01]
+        bp['momentums']         = [0.9]
+        bp['weight_decays']     = [0]
+        bp['ps']     			= [30]
+        run_benchmark(outpath, 'plnn', bp, cuda, tag)
 
