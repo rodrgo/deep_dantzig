@@ -33,11 +33,12 @@ def get_total_loss(testloader, net, criterion, cuda=False):
         net.require_grads(True)
     return total_loss
 
-def train_net(net, criterion, optimizer, trainloader, num_epochs, batch_size, testloader=None, verbose=False, cuda=False):
+def train_net(net, criterion, optimizer, trainloader, num_epochs, batch_size, testloader=None, verbose=False, cuda=False, acc_break=None):
     net.train()
     losses          = [] 
     running_losses  = []
     total_losses    = []
+    accuracies      = [] 
     for epoch in range(num_epochs):
         running_loss = 0.0
         for i, data in enumerate(trainloader, 0):
@@ -67,9 +68,18 @@ def train_net(net, criterion, optimizer, trainloader, num_epochs, batch_size, te
         total_loss      = get_total_loss(testloader, net, criterion, cuda=cuda) 
         total_losses    = np.append(total_losses, total_loss)
 
+        # Accuracy
+        acc = test_binary_classification(testloader, net, 
+                verbose=False, cuda=cuda)
+        accuracies.append(acc)
+
+        if not acc_break is None and acc >= acc_break:
+            print('Reached %g accuracy in %d epochs' % (acc, epoch))
+            break
+
         # Stats
         if verbose:
-            print('(epoch=%d) Loss: val=%.7f, running=%.7f, total=%.7f' % (epoch+1, loss_val, running_loss, total_loss))
+            print('(epoch=%d) Loss: val=%.7f, running=%.7f, total=%.7f, accuracy=%1.3f' % (epoch+1, loss_val, running_loss, total_loss, acc))
 
     if verbose:
         print('Finished training')
@@ -79,5 +89,7 @@ def train_net(net, criterion, optimizer, trainloader, num_epochs, batch_size, te
     losses_out['batch']   = to_series(losses)
     losses_out['running'] = to_series(running_losses)
     losses_out['total']   = to_series(total_losses)
+    # acc is not a loss, but put it here too
+    losses_out['accs']    = to_series(accuracies)
     return losses_out
 

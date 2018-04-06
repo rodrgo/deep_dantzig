@@ -79,8 +79,7 @@ def plot_in_visdom(vis, results):
             vis._send({'data': traces, 'layout': layout, 'win': 'win_tot_%d_%d' % (w, seed)})
     return
 
-def main():
-
+def plot_benchmark():
     loc     = 'output'
     tag     = 'benchmark_randomlp_res'
 
@@ -95,6 +94,12 @@ def main():
 
     vis = visdom.Visdom()
     plot_in_visdom(vis, results)
+
+def main():
+
+    if True:
+        plot_benchmark()
+
 
 if __name__ == '__main__':
     main()

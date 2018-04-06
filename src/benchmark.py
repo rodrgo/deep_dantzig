@@ -78,6 +78,8 @@ def run_experiment(params, dataset, seed=1111, cuda=False, tag=None):
     m       = lp_params[0]['m'] 
     n       = lp_params[0]['n'] 
 
+    print('m=%d, n=%d' % (m, n))
+
     # model
     model       = Model(m, n, p, t, cuda=cuda)
     if cuda:
@@ -198,6 +200,6 @@ if __name__ == '__main__':
         bp['learning_rates']    = [0.01]
         bp['momentums']         = [0.9]
         bp['weight_decays']     = [0]
-        bp['ps']     			= [30]
+        bp['ps']     			= [5, 7]
         run_benchmark(outpath, 'plnn', bp, cuda, tag)
 
