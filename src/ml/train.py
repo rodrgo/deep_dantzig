@@ -3,38 +3,41 @@ import torch
 import pandas as pd
 import numpy as np
 from ml.types import LongTensor
+from ml.test import test_binary_classification
 
 def batched(data, batch_size):
     batch   = 0
     for batch in range(batch_size):
         dp = {}
         dp['x']      = {}
-        dp['x']['A'] = data['x']['A'][batch, :, :].unsqueeze(0)
-        dp['x']['b'] = data['x']['b'][batch, :].unsqueeze(0)
-        dp['x']['c'] = data['x']['c'][batch, :].unsqueeze(0)
-        dp['x']['i'] = torch.LongTensor([data['x']['i'][batch]])
-        dp['y']      = torch.LongTensor([data['y'][batch]])
+        dp['x']['A'] = data['lp']['A'][batch, :, :].unsqueeze(0)
+        dp['x']['b'] = data['lp']['b'][batch, :].unsqueeze(0)
+        dp['x']['c'] = data['lp']['c'][batch, :].unsqueeze(0)
+        dp['x']['node_features']  = data['node_features']
+        dp['y']  = data['node_labels'].squeeze(0)
         yield dp
 
-def get_total_loss(testloader, net, criterion, cuda=False):
+def get_total_loss(testloader, model, criterion, cuda=False):
     # Compute total loss
     if testloader is None:
         total_loss = None 
     else:
         total_loss = 0.0
-        net.require_grads(False)
+        model.require_grads(False)
         for i, data in enumerate(testloader, 0):
             for dp in batched(data, 1):
-                inputs      = dp['x']
-                label       = Variable(LongTensor(dp['y'], cuda=cuda))
-                outputs     = net(inputs)
-                loss        = criterion(outputs, label)
+                # x: input, y: output
+                x           = dp['x']
+                y           = Variable(LongTensor(dp['y'], cuda=cuda))
+                # forward + backward + optimize
+                fx          = model(x)
+                loss        = criterion(fx, y)
                 total_loss  += loss.data[0] 
-        net.require_grads(True)
+        model.require_grads(True)
     return total_loss
 
-def train_net(net, criterion, optimizer, trainloader, num_epochs, batch_size, testloader=None, verbose=False, cuda=False, acc_break=None):
-    net.train()
+def train_net(model, criterion, optimizer, trainloader, num_epochs, batch_size, testloader=None, verbose=False, cuda=False, acc_break=None):
+    model.train()
     losses          = [] 
     running_losses  = []
     total_losses    = []
@@ -46,11 +49,11 @@ def train_net(net, criterion, optimizer, trainloader, num_epochs, batch_size, te
             optimizer.zero_grad()
             for dp in batched(data, batch_size):
                 # x: input, y: output
-                inputs  = dp['x']
-                label   = Variable(LongTensor(dp['y'], cuda=cuda))
+                x       = dp['x']
+                y       = Variable(LongTensor(dp['y'], cuda=cuda))
                 # forward + backward + optimize
-                outputs = net(inputs)
-                loss    = criterion(outputs, label)
+                fx      = model(x)
+                loss    = criterion(fx, y)
                 loss.backward()
             optimizer.step()
 
@@ -65,12 +68,11 @@ def train_net(net, criterion, optimizer, trainloader, num_epochs, batch_size, te
 
         # Total Loss
         # Computed once per epoch
-        total_loss      = get_total_loss(testloader, net, criterion, cuda=cuda) 
+        total_loss      = get_total_loss(testloader, model, criterion, cuda=cuda) 
         total_losses    = np.append(total_losses, total_loss)
 
         # Accuracy
-        acc = test_binary_classification(testloader, net, 
-                verbose=False, cuda=cuda)
+        acc, prec, recall = test_binary_classification(testloader, model, verbose=False, cuda=cuda)
         accuracies.append(acc)
 
         if not acc_break is None and acc >= acc_break:
@@ -79,7 +81,7 @@ def train_net(net, criterion, optimizer, trainloader, num_epochs, batch_size, te
 
         # Stats
         if verbose:
-            print('(epoch=%d) Loss: val=%.7f, running=%.7f, total=%.7f, accuracy=%1.3f' % (epoch+1, loss_val, running_loss, total_loss, acc))
+            print('(epoch=%d) Loss: val=%.7f, running=%.7f, total=%.7f, accuracy=%1.3f, precision=%1.2f, recall=%1.2f' % (epoch+1, loss_val, running_loss, total_loss, acc, prec, recall))
 
     if verbose:
         print('Finished training')

@@ -69,19 +69,11 @@ def run_experiment(params, dataset, seed=1111, cuda=False, tag=None):
 
     # datasets
     trainset, testset = dataset_factory(dataset, seed)
-    trainloader = DataLoader(trainset, batch_size=bs, shuffle=True,  num_workers=1)
-    testloader  = DataLoader(testset,  batch_size=1,  shuffle=False, num_workers=1)
-
-    # Get params
-    lp_params  = trainset.get_lp_params()
-    assert(len(lp_params) == 1)
-    m       = lp_params[0]['m'] 
-    n       = lp_params[0]['n'] 
-
-    print('m=%d, n=%d' % (m, n))
+    trainloader = DataLoader(trainset, batch_size=1, shuffle=True)
+    testloader  = DataLoader(testset,  batch_size=1,  shuffle=False)
 
     # model
-    model       = Model(m, n, p, t, cuda=cuda)
+    model       = Model(p, t, cuda=cuda)
     if cuda:
         model   = model.cuda()
 
@@ -97,7 +89,7 @@ def run_experiment(params, dataset, seed=1111, cuda=False, tag=None):
     # record
     out             = {}
     out['losses']   = losses
-    out['lps']      = trainset.get_lp_params()
+    #out['lps']      = trainset.get_lp_params()
     out['acc']      = acc
 
     d               = {}
@@ -172,7 +164,8 @@ if __name__ == '__main__':
     if args.cuda:
         device = int(args.device)
         if torch.cuda.is_available():
-            torch.cuda.set_device(device)
+            os.environ['CUDA_VISIBLE_DEVICES'] = str(device)
+            #torch.cuda.set_device(device)
             cuda = True
         else:
             print('CUDA is not available')
@@ -180,26 +173,26 @@ if __name__ == '__main__':
     # randomlp
     if args.randomlp:
         bp = {}
-        bp['epochs']            = [250]
+        bp['epochs']            = [150]
         bp['seeds']             = [0, 3]
-        bp['batch_sizes']       = [1, 5]
-        bp['rounds_s2v']        = [0, 2, 4]
+        bp['batch_sizes']       = [1]
+        bp['rounds_s2v']        = [1, 2, 4]
         bp['learning_rates']    = [0.01, 0.001]
         bp['momentums']         = [0.9]
         bp['weight_decays']     = [0]
-        bp['ps']     			= [12]
+        bp['ps']                = [12]
         run_benchmark(outpath, 'randomlp', bp, cuda, tag)
 
     # plnn
     if args.plnn:
         bp = {}
-        bp['epochs']            = [250]
+        bp['epochs']            = [2]
         bp['seeds']             = [3]
-        bp['batch_sizes']       = [1, 5]
-        bp['rounds_s2v']        = [2]
+        bp['batch_sizes']       = [1]
+        bp['rounds_s2v']        = [4]
         bp['learning_rates']    = [0.01]
         bp['momentums']         = [0.9]
         bp['weight_decays']     = [0]
-        bp['ps']     			= [5, 7]
+        bp['ps']                = [40]
         run_benchmark(outpath, 'plnn', bp, cuda, tag)
 

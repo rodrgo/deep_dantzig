@@ -3,54 +3,72 @@ import numpy as np
 import os
 import dotenv
 
-def get_expr_coeffs(expr, var_indices):
-    for i in range(expr.size()):
-        dvar = expr.getVar(i)
-        yield var_indices[dvar], expr.getCoeff(i)
+def get_expr_coeffs(constr, var_indices):
+    for i in range(constr.size()):
+        dvar = constr.getVar(i)
+        yield var_indices[dvar], constr.getCoeff(i)
 
 def constr2numpy(model, standardize=True):
-    dvars   = model.getVars()
-    constrs = model.getConstrs()
-    var_indices = {v:j for j, v in enumerate(dvars)}
-    for i, constr in enumerate(constrs):
-        ai = np.zeros(len(dvars)) 
+    vs = model.getVars()
+    cs = model.getConstrs()
+    var_indices = {v:j for j, v in enumerate(vs)}
+    for i, constr in enumerate(cs):
+        ai = np.zeros(len(vs)) 
         bi = constr.RHS
         for j, coeff in get_expr_coeffs(model.getRow(constr), var_indices):
             ai[j] = coeff
-        op = constr.Sense
-        if standardize and op == '>':
+        sense = constr.Sense
+        if standardize and sense == '>':
             ai = -ai
             bi = -bi
-            op = '<'
-        yield i, ai, bi, op
+            sense = '<'
+        yield i, ai, bi, sense, constr.ConstrName
 
-def bounds2numpy(model):
-    dvars   = model.getVars()
+def bounds2numpy(model, m):
+    def has_lb(v):
+        try:
+            lb = v.LB
+        except AttributeError:
+            lb = -1e100
+        return True if lb > -1e100 else False
+    def has_ub(v):
+        try:
+            ub = v.UB
+        except AttributeError:
+            ub = 1e100
+        return True if ub < 1e100 else False
+
+    vs      = model.getVars()
     bs      = []
-    ais     = []
-    ops     = []
-    for j, dvar in enumerate(dvars):
+    constrs = []
+    cnames  = {}
+    ops     = {}
+    bounds  = {}
+    for j, v in enumerate(vs):
+        bounds[v.varName] = {'lb': None, 'ub': None}
         # lower bound
-        try:
-            b_lb    = -dvar.LB
-            a_lb    = np.zeros(len(dvars)) 
-            a_lb[j] = -1
-            ais.append(a_lb)
-            bs.append(b_lb)
-            ops.append('<')
-        except AttributeError:
-            pass
+        if has_lb(v):
+            bs.append(-v.LB)
+            constr = np.zeros(len(vs)) 
+            constr[j] = -1.0
+            constrs.append(constr)
+
+            cname = '%s_lb' % (v.varName)
+            cnames[cname] = m + len(constrs) - 1
+            ops[cname]    = '<'
+            bounds[v.varName]['lb'] = {'val': -v.LB, 'sense': '<', 'name': cname}
         # upper bound
-        try:
-            b_ub    = dvar.UB
-            a_ub    = np.zeros(len(dvars)) 
-            a_ub[j] = 1
-            ais.append(a_ub)
-            bs.append(b_ub)
-            ops.append('<')
-        except AttributeError:
-            pass
-    return ais, bs, ops
+        if has_ub(v):
+            bs.append(v.UB)
+            constr = np.zeros(len(vs)) 
+            constr[j] = 1.0
+            constrs.append(constr)
+
+            cname = '%s_ub' % (v.varName)
+            cnames[cname] = m + len(constrs) - 1
+            ops[cname]    = '<'
+            bounds[v.varName]['ub'] = {'val': v.UB, 'sense': '<', 'name': cname}
+    return constrs, bs, ops, cnames, bounds
 
 def model2numpy(model, standardize=True):
     '''
@@ -64,21 +82,29 @@ def model2numpy(model, standardize=True):
     A   = np.zeros((m,n))
     b   = np.zeros(m)
     c   = np.zeros(n)
-    ops = [] 
+    csenses = {}
+    cnames  = {}
 
     # Constraints
-    for i, ai, bi, op in constr2numpy(model, standardize):
-        A[i,:] = ai
-        b[i]   = bi
-        ops.append(op)
+    for i, ai, bi, csense, cname in constr2numpy(model, standardize):
+        A[i,:]          = ai
+        b[i]            = bi
+        csenses[cname]  = csense
+        cnames[cname]   = i
 
     # Lower and Upper bounds
-    A_b, b_b, ops_b = bounds2numpy(model)
+    # They all come in standardized form
+    # lbs and ubs are dictionaries varName:boundValue of
+    # non-trivial lower an upper bounds
+    A_b, b_b, bsenses, bname2index, bounds = bounds2numpy(model, m)
 
     # Stack
     A = np.vstack((A, A_b))
     b = np.concatenate((b, b_b))
-    ops.extend(ops_b)
+    for k in bsenses.keys():
+        csenses[k] = bsenses[k]
+    for k in bname2index.keys(): 
+        cnames[k] = bname2index[k]
 
     c[:] = model.Obj
     sense = model.ModelSense
@@ -92,7 +118,11 @@ def model2numpy(model, standardize=True):
     else:
         obj = 'min'
 
-    return A, b, c, ops, obj
+    lp_item = {'A': A, 'b': b, 'c': c, 
+        'obj': obj, 'csenses': csenses, 
+        'cnames': cnames, 'bounds': bounds}
+
+    return lp_item
 
 def mps2numpy(fpath, standardize=True):
     model               = read(fpath)

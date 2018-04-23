@@ -23,6 +23,9 @@ class RandomLPDataset(Dataset):
     Hence,
         x = (A, b, c, i)
         y = (g[i] == 0)   i.e. constraint "i" is active.
+    However, data is generated 'per-problem' as:
+        {'lp'       : {'A': A, 'b': b, 'c', c}, 
+         'labels'   : [ (i, label(i)) for i in range(m)] }
     '''
 
     def __init__(self, m, n, num_lps=1, test=False, seed=3231):
@@ -38,27 +41,13 @@ class RandomLPDataset(Dataset):
         step            = np.random.randint(1, 1000) 
         self._seeds     = [seed + i*step for i in range(num_lps)]
         self._problems  = self._generate_problems()
-        self._index     = [] # Lists num_lps*m restrictions
-        self._populate_index()
 
     def __len__(self):
-        return len(self._index)
+        return len(self._problems)
 
     def __getitem__(self, idx):
-        '''
-        Each problem has 'm' restrictions, 
-        so we have a total of N*m datapoints
-        '''
-        # Extract datapoint from index
-        point = self._index[idx % len(self._index)]
-        num_problem = point['prob']
-        row         = point['row']
-        active      = point['active']
-        # Problems 
-        p = self._problems[num_problem]
-        sample = {'x': {'A': p['A'], 'b': p['b'], 'c': p['c'], 'i': row}, 
-                  'y': active }
-        return sample
+        p = self._problems[idx % len(self._problems)]
+        return {'lp': {'A': p['A'], 'b': p['b'], 'c': p['c']}, 'labels': p['labels']}
 
     def get_lp_params(self):
         params = []
@@ -72,29 +61,6 @@ class RandomLPDataset(Dataset):
             prob = self.create_lp_problem(self.m, self.n, seed=seed, with_stats=True)
             problems.append(prob)
         return problems
-
-    def _populate_index(self):
-        def is_active(z, prob):
-            if z in prob['active']:
-                return 1
-            else:
-                return 0
-        points = []
-        for j in range(len(self._problems)):
-            prob = self._problems[j]
-            for i in range(prob['A'].shape[0]):
-                points.append({'prob': j, 'row': i, 'active': is_active(i, prob)})
-        actives   = [x for x in points if x['active']]
-        inactives = [x for x in points if not x['active']]
-        # Replicate to have class balance 
-        # In test_mode we return all points
-        # since this dataset is meant to be used in
-        # overfitting tests
-        if len(actives) == len(inactives) or self.test_mode:
-            self._index = points 
-        else:
-            print('WARNING: class inbalance')
-            self._index = len(actives)*inactives + len(inactives)*actives 
 
     @staticmethod
     def create_lp_problem(m, n, seed=None, with_stats=False):
@@ -131,7 +97,13 @@ class RandomLPDataset(Dataset):
             success = False
             active = []
             print('WARNING: Linear program did not succeed!')
-        prob = {'A': A, 'b': b, 'c': c, 'active': active}
+        # Labels
+        is_active   = lambda z : 1 if z in active else 0
+        labels      = [(i, is_active(i)) for i in range(A.shape[0])]
+        nactive     = len([x for x in labels if x[1] == 1])
+        ninactive   = len([x for x in labels if x[1] == 0])
+        if nactive != ninactive:
+            print('WARNING: class inbalance')
         # Stats
         if with_stats:
             stats = {}
@@ -146,7 +118,13 @@ class RandomLPDataset(Dataset):
             stats['success'] = success
         else:
             stats = None
-        prob['stats'] = stats
+        # Assemble
+        prob = {'A': A, 
+                'b': b, 
+                'c': c, 
+                'active': active, 
+                'labels': labels,
+                'stats' : stats}
         return prob
 
 def main():
@@ -155,9 +133,13 @@ def main():
     m  = 10
     seed = 0
 
+    # create_lp_problem
     prob = RandomLPDataset.create_lp_problem(m, n, seed)
     print(prob)
     print('%d actives out of %d' % (len(prob['active']), m))
+
+    # Init
+    dataset = RandomLPDataset(m, n, num_lps=1, test=False, seed=seed)
 
 if __name__ == '__main__':
     main()

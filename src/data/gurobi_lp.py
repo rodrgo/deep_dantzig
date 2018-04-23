@@ -1,10 +1,13 @@
 from gurobipy import *
 from scipy import stats
 import numpy as np
+import math
+from data.mps2numpy import model2numpy
 
 class LinProg(object): 
 
-    def __init__(self, A, b, c, obj='min', ops=None):
+    def init(self, A, b, c, obj='min', ops=None):
+        # Old constructor
         self.A      = A
         self.m      = A.shape[0]
         self.n      = A.shape[1]
@@ -22,6 +25,59 @@ class LinProg(object):
         self._add_variables()
         self._add_constraints()
         self._add_objective()
+
+
+    @staticmethod
+    def getitem(mps_path):
+        # Read mps
+        model = read(mps_path)
+
+        # Standardize
+        item = model2numpy(model, standardize=True)
+
+        # node_features
+        name2index  = item['cnames']
+        name2sense  = item['csenses']
+        assert(all([True if v in ['<', '='] else False for k,v in name2sense.items()]))
+
+        assert(item['A'].shape[0] == len(name2sense))
+
+        # 1 if sense is '<' and 0 otherwise
+        node_features = [None] * item['A'].shape[0]
+        for k,sense in name2sense.items(): 
+            node_features[name2index[k]] = 1 if sense == '<' else 0
+
+        # node_labels
+        model.setParam('OutputFlag', 0)
+        model.optimize()
+        slacks = {c.ConstrName:c.Slack for c in model.getConstrs()}
+
+        node_labels = [None] * item['A'].shape[0]
+        for k,slack in slacks.items():
+            node_labels[name2index[k]] = 1 if slack == 0 else 0
+
+        x = {v.varName:v.x for v in model.getVars()}
+        xbounds = item['bounds']
+        for k,v in x.items():
+            # we flip the lower bounds so need to test v == -lb['val']
+            lb = xbounds[k]['lb']
+            if lb:
+                node_labels[name2index[lb['name']]] = 1 if v == -lb['val'] else 0
+            ub = xbounds[k]['ub']
+            if ub:
+                node_labels[name2index[ub['name']]] = 1 if v == ub['val'] else 0
+        
+        assert(all([True if not v is None else False for v in node_features]))
+        assert(all([True if not v is None else False for v in node_labels]))
+
+        # Append an extra zero to node_features to account for constraints
+        node_features.append(0)
+
+        lp_item = {'lp': {'A': item['A'], 'b': item['b'], 'c': item['c']},
+                   'node_features': np.asarray(node_features),
+                   'node_labels':   np.asarray(node_labels)}
+
+        return lp_item
 
     def dot(self, C, X):
         '''
@@ -100,11 +156,21 @@ class LinProg(object):
 
     def get_statuscode(self):
         # http://www.gurobi.com/documentation/7.5/refman/optimization_status_codes.html#sec:StatusCodes
-        statuscodes = {1: 'loaded', 2: 'optimal', 3: 'infeasible',
-            4: 'inf_or_unbd', 5: 'unbounded', 6: 'cutoff',
-            7: 'iteration_limit', 8: 'node_limit', 9: 'time_limit',
-            10: 'solution_limit', 11: 'interrupted', 12: 'numeric',
-            13: 'suboptimal', 14: 'inprogress', 15: 'user_obj_limit'}
+        statuscodes = {1: 'loaded', 
+            2: 'optimal', 
+            3: 'infeasible',
+            4: 'inf_or_unbd', 
+            5: 'unbounded',
+            6: 'cutoff',
+            7: 'iteration_limit',
+            8: 'node_limit',
+            9: 'time_limit',
+            10: 'solution_limit', 
+            11: 'interrupted', 
+            12: 'numeric',
+            13: 'suboptimal',
+            14: 'inprogress', 
+            15: 'user_obj_limit'}
         s = self.model.status
         if not s in [1, 2]:
             print(statuscodes[s])
