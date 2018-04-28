@@ -3,7 +3,7 @@ import torch
 import pandas as pd
 import numpy as np
 from ml.types import LongTensor
-from ml.test import test_binary_classification
+from ml.test import get_accuracy
 
 def batched(data, batch_size):
     batch   = 0
@@ -17,7 +17,7 @@ def batched(data, batch_size):
         dp['y']  = data['node_labels'].squeeze(0)
         yield dp
 
-def get_total_loss(testloader, model, criterion, cuda=False):
+def total_loss(testloader, model, criterion, cuda=False):
     # Compute total loss
     if testloader is None:
         total_loss = None 
@@ -36,12 +36,14 @@ def get_total_loss(testloader, model, criterion, cuda=False):
         model.require_grads(True)
     return total_loss
 
-def train_net(model, criterion, optimizer, trainloader, num_epochs, batch_size, testloader=None, verbose=False, cuda=False, acc_break=None):
+def train_net(model, criterion, optimizer, trainloader, num_epochs, batch_size, testloader, verbose=False, cuda=False, acc_break=None):
+
     model.train()
-    losses          = [] 
-    running_losses  = []
-    total_losses    = []
-    accuracies      = [] 
+    losses      = {'test': [], 'train': []}
+    accuracy    = {'test': [], 'train': []}
+    precision   = {'test': [], 'train': []}
+    recall      = {'test': [], 'train': []}
+
     for epoch in range(num_epochs):
         running_loss = 0.0
         for i, data in enumerate(trainloader, 0):
@@ -57,41 +59,54 @@ def train_net(model, criterion, optimizer, trainloader, num_epochs, batch_size, 
                 loss.backward()
             optimizer.step()
 
-            # Loss
-            # averaged automatically
-            loss_val        = float(loss.data[0]) 
-            losses          = np.append(losses, loss_val)
-
             # Running Loss
+            loss_val        = float(loss.data[0]) # averaged automatically
             running_loss    += loss_val
-            running_losses  = np.append(running_losses, running_loss)
 
-        # Total Loss
+        # Losses
         # Computed once per epoch
-        total_loss      = get_total_loss(testloader, model, criterion, cuda=cuda) 
-        total_losses    = np.append(total_losses, total_loss)
+
+        train = total_loss(trainloader, model, criterion, cuda=cuda)
+        test  = total_loss(testloader, model, criterion, cuda=cuda) 
+
+        losses['train'].append(train)
+        losses['test'].append(test)
 
         # Accuracy
-        acc, prec, recall = test_binary_classification(testloader, model, verbose=False, cuda=cuda)
-        accuracies.append(acc)
+        test  = get_accuracy(testloader, model, verbose=False, cuda=cuda)
+        train = get_accuracy(trainloader, model, verbose=False, cuda=cuda)
 
-        if not acc_break is None and acc >= acc_break:
-            print('Reached %g accuracy in %d epochs' % (acc, epoch))
+        accuracy['train'].append(train['accuracy'])
+        accuracy['test'].append(test['accuracy'])
+
+        precision['train'].append(train['precision'])
+        precision['test'].append(test['precision'])
+
+        recall['train'].append(train['recall'])
+        recall['test'].append(test['recall'])
+    
+        if not acc_break is None and accuracy['test'] >= acc_break:
+            print('Reached %g accuracy in %d epochs' % (accuracy['test'], epoch))
             break
 
         # Stats
         if verbose:
-            print('(epoch=%d) Loss: val=%.7f, running=%.7f, total=%.7f, accuracy=%1.3f, precision=%1.2f, recall=%1.2f' % (epoch+1, loss_val, running_loss, total_loss, acc, prec, recall))
+            r2str = lambda x : ', '.join(['%s=%.2f' % (k,v[-1]) for k,v in x.items()])
+            loss = 'loss(%s)' % (r2str(losses))
+            acc  = 'acc(%s)'  % (r2str(accuracy))
+            prec = 'prec(%s)' % (r2str(precision))
+            rec  = 'rec(%s)'  % (r2str(recall))
+            print('(epoch=%d) %s, %s, %s, %s' % (epoch+1, loss, acc, prec,rec))
 
     if verbose:
         print('Finished training')
 
-    to_series = lambda x : pd.Series(x).to_json(orient='values')
-    losses_out = {}
-    losses_out['batch']   = to_series(losses)
-    losses_out['running'] = to_series(running_losses)
-    losses_out['total']   = to_series(total_losses)
-    # acc is not a loss, but put it here too
-    losses_out['accs']    = to_series(accuracies)
-    return losses_out
+    #to_series  = lambda x : pd.Series(x).to_json(orient='values')
+    out = {}
+    out['loss']      = losses
+    out['accuracy']  = accuracy
+    out['precision'] = precision
+    out['recall']    = recall
+
+    return out
 

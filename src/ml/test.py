@@ -4,7 +4,7 @@ from torch.autograd import Variable
 from ml.types import LongTensor
 import numpy as np
 
-def test_binary_classification(testloader, net, verbose=False, cuda=False):
+def get_accuracy(testloader, net, verbose=False, cuda=False):
     net.eval()
 
     tps = 0
@@ -40,17 +40,15 @@ def test_binary_classification(testloader, net, verbose=False, cuda=False):
         tns += tn
         fns += fn
 
-        precision   = tp/(tp+fp)
-        recall      = tp/(tp+fn) 
-        acc         = float((predicted == y).sum())/len(y)
-
-        if verbose:
-            print('Accuracy: %1.2f, Precision %1.2f, Recall: %1.2f' % (acc, precision, recall))
-
     acc         = (tps + tns)/(tps + fps + tns + fns)
     precision   = tps/(tps + fps)
     recall      = tps/(tps + fns)
 
+    res = {}
+    res['accuracy']     = acc
+    res['precision']    = precision
+    res['recall']       = recall
+
     net.train()
-    return acc, precision, recall
+    return res
 

@@ -15,6 +15,8 @@ class FileSystem(object):
             fpath = os.path.join(self._root, 'data/figs')
         elif loc == 'output':
             fpath = os.path.join(self._root, 'data/output')
+        elif loc == 'plnn/raw':
+            fpath = os.path.join(self._root, loc)
         else:
             try:
                 with open(loc, 'x') as tmpfile:

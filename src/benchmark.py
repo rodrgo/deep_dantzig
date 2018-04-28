@@ -18,7 +18,6 @@ mpl.use('TkAgg')
 import matplotlib.pyplot as plt
 
 from ml.train import train_net
-from ml.test import test_binary_classification 
 from ml.models.s2v import Model
 from utils.plot import s2v_loss_grid
 
@@ -72,6 +71,9 @@ def run_experiment(params, dataset, seed=1111, cuda=False, tag=None):
     trainloader = DataLoader(trainset, batch_size=1, shuffle=True)
     testloader  = DataLoader(testset,  batch_size=1,  shuffle=False)
 
+    print('%d seed LPs in trainset' % (len(trainset.lp_dirs)))
+    print('%d problems in trainset' % (len(trainset)))
+
     # model
     model       = Model(p, t, cuda=cuda)
     if cuda:
@@ -80,17 +82,13 @@ def run_experiment(params, dataset, seed=1111, cuda=False, tag=None):
     # optimization
     criterion   = nn.CrossEntropyLoss()
     optimizer   = optim.SGD(model.parameters(), lr=lr, momentum=mtm, weight_decay=wd)
-    losses      = train_net(model, criterion, optimizer, trainloader, 
+    results     = train_net(model, criterion, optimizer, trainloader, 
                             epochs, bs, testloader, verbose=True, cuda=cuda)
-
-    # test
-    acc         = test_binary_classification(testloader, model, verbose=True, cuda=cuda)
 
     # record
     out             = {}
-    out['losses']   = losses
-    #out['lps']      = trainset.get_lp_params()
-    out['acc']      = acc
+    out['lps']      = trainset.get_lp_params()
+    out['results']  = results
 
     d               = {}
     d['params']     = {k:v for k,v in params.items()}
@@ -186,13 +184,13 @@ if __name__ == '__main__':
     # plnn
     if args.plnn:
         bp = {}
-        bp['epochs']            = [2]
-        bp['seeds']             = [3]
+        bp['epochs']            = [1000]
+        bp['seeds']             = [3, 4]
         bp['batch_sizes']       = [1]
-        bp['rounds_s2v']        = [4]
+        bp['rounds_s2v']        = [1, 2, 3]
         bp['learning_rates']    = [0.01]
         bp['momentums']         = [0.9]
         bp['weight_decays']     = [0]
-        bp['ps']                = [40]
+        bp['ps']                = [35, 40, 45]
         run_benchmark(outpath, 'plnn', bp, cuda, tag)
 

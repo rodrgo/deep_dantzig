@@ -2,6 +2,7 @@ from gurobipy import *
 from scipy import stats
 import numpy as np
 import math
+import json
 from data.mps2numpy import model2numpy
 
 class LinProg(object): 
@@ -29,6 +30,9 @@ class LinProg(object):
 
     @staticmethod
     def getitem(mps_path):
+
+        SOLVE_LP = False
+
         # Read mps
         model = read(mps_path)
 
@@ -48,15 +52,34 @@ class LinProg(object):
             node_features[name2index[k]] = 1 if sense == '<' else 0
 
         # node_labels
-        model.setParam('OutputFlag', 0)
-        model.optimize()
-        slacks = {c.ConstrName:c.Slack for c in model.getConstrs()}
-
         node_labels = [None] * item['A'].shape[0]
-        for k,slack in slacks.items():
-            node_labels[name2index[k]] = 1 if slack == 0 else 0
+        if SOLVE_LP:
+            model.setParam('OutputFlag', 0)
+            model.optimize()
 
-        x = {v.varName:v.x for v in model.getVars()}
+            # get x
+            x = {v.varName:v.x for v in model.getVars()}
+            
+            # get node_labels from slacks
+            slacks = {c.ConstrName:c.Slack for c in model.getConstrs()}
+            for k,slack in slacks.items():
+                node_labels[name2index[k]] = 1 if slack == 0 else 0
+        else:
+            # Read info  
+            info_path = os.path.splitext(mps_path)[0] + '.info'
+            with open(info_path, 'r') as f:
+                lp_info = json.load(f)
+
+            # Recover x
+            x = lp_info['x_opt']
+
+            # reconstruct node labels
+            active = lp_info['active']
+            for c in model.getConstrs():
+                node_labels[name2index[c.ConstrName]] = 0
+            for c in active:
+                node_labels[name2index[c]] = 1
+
         xbounds = item['bounds']
         for k,v in x.items():
             # we flip the lower bounds so need to test v == -lb['val']
@@ -66,7 +89,7 @@ class LinProg(object):
             ub = xbounds[k]['ub']
             if ub:
                 node_labels[name2index[ub['name']]] = 1 if v == ub['val'] else 0
-        
+
         assert(all([True if not v is None else False for v in node_features]))
         assert(all([True if not v is None else False for v in node_labels]))
 
@@ -75,7 +98,8 @@ class LinProg(object):
 
         lp_item = {'lp': {'A': item['A'], 'b': item['b'], 'c': item['c']},
                    'node_features': np.asarray(node_features),
-                   'node_labels':   np.asarray(node_labels)}
+                   'node_labels':   np.asarray(node_labels),
+                   'mps_path': mps_path}
 
         return lp_item
 

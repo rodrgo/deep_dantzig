@@ -22,25 +22,31 @@ def read_json(fpath):
 
 class DatasetPLNN(Dataset):
 
-    def __init__(self, num_lps=None, test=False, seed=3231):
+    def __init__(self, num_lps=None, test=False, seed=1111):
         # set main parameters
         # (m,n) : dimension of A
         # N     : number of datapoints
         self.test = test
+        self.seed = seed
         # Train,test splits
         TRAIN_PCT = 0.90
         assert(0.0 < TRAIN_PCT and TRAIN_PCT < 1.0)
-        TEST_PCT  = 1 - TRAIN_PCT
         # set set for numpy
-        np.random.seed(seed)
-        fpaths = self.get_mps_paths(ext='.mps', num_lps=num_lps)
+        fpaths, fdirs = self.get_mps_paths(ext='.mps', num_lps=num_lps, seed=1111)
+        self.lp_dirs  = fdirs
+        # Get LP problems we tested with
         # Define number of training and test sets
-        N = len(fpaths)
-        train_index = np.random.randint(0, N, int(N * TRAIN_PCT))
+        np.random.seed(self.seed)
+        ftrain = np.random.choice(fpaths, size=int(len(fpaths) * TRAIN_PCT), replace=False)
         if self.test:
-            self._fpaths = [fpaths[i] for i in range(N) if not i in train_index]
+            self._fpaths = list(set(fpaths) - set(ftrain))
         else:
-            self._fpaths = [fpaths[i] for i in range(N) if i in train_index]
+            self._fpaths = ftrain
+
+    def override_fpaths(self, lps):
+        fpaths = [os.path.join(h,f) for h in lps for f in os.listdir(h) if f.endswith('.mps')]
+        self._fpaths = fpaths
+        return
 
     def __len__(self):
         return len(self._fpaths)
@@ -51,10 +57,7 @@ class DatasetPLNN(Dataset):
         return item
 
     def get_lp_params(self):
-        params = []
-        for p in self._problems:
-            params.append(p['stats'])
-        return params
+        return self.lp_dirs
 
     @staticmethod
     def get_lp_dir():
@@ -64,14 +67,15 @@ class DatasetPLNN(Dataset):
         return lp_dir
 
     @staticmethod
-    def get_mps_paths(ext='.mps', num_lps=None):
+    def get_mps_paths(ext='.mps', num_lps=None, seed=1111):
         h  = DatasetPLNN.get_lp_dir()
         ds = [os.path.join(h,f) for f in os.listdir(h) if f.startswith('problem_')]
         ds = [d for d in ds if os.path.isdir(d)]
         if num_lps and num_lps < len(ds):
-            ds = [ds[j] for j in np.random.randint(0, len(ds), num_lps)]
+            np.random.seed(seed)
+            ds = np.random.choice(ds, size=num_lps, replace=False).tolist()
         fs = [os.path.join(d,f) for d in ds for f in os.listdir(d) if f.endswith(ext)]
-        return fs
+        return fs, ds
 
     @staticmethod
     def extract_lp_problem(fpath, standardize=True):
@@ -142,20 +146,6 @@ class DatasetPLNN(Dataset):
                 'node_features': {nindex[k]:is_eq(v) for k,v in d['constr_sense'].items()}}
         return prob, prob_info
 
-def generate_plnn_stats():
-    # Get paths
-    fpaths = DatasetPLNN.get_mps_paths()
-    # Generate and save
-    probs = []
-    for fpath in fpaths:
-        prob = DatasetPLNN.extract_lp_problem(fpath, with_stats=True)
-        probs.append(prob['stats'])
-    lp_dir   = DatasetPLNN.get_lp_dir()
-    outpath  = os.path.join(lp_dir, 'stats.json')
-    with open(outpath, 'w') as outfile:
-        json.dump(probs, outfile)
-    return
-
 def test_plnn_dataset():
     from gurobipy import read
     # Get paths
@@ -202,60 +192,6 @@ def test_plnn_dataset():
             f.write('\n')
     return
 
-def _test_consistency(p0, p1):
-    # test consistency between two problems
-    # p0 is info for original problem
-    # p1 is info transformed problem 
-    # Gets nontrivial lower bounds (lbs) and upper bounds (ubs)
-    lbs  = lambda d : {k:v for k,v in d.items() if v > -1e100}
-    ubs  = lambda d : {k:v for k,v in d.items() if v < 1e100}
-    lbs0 = lbs(p0['lower_bounds'])
-    ubs0 = ubs(p0['upper_bounds'])
-    lbs1 = lbs(p1['lower_bounds'])
-    ubs1 = ubs(p1['upper_bounds'])
-    tests = {}
-    tests['sc']       = (p0['sc'] == p1['sc'])
-    tests['obj_val']  = (abs(p0['obj_val']) - abs(p1['obj_val']) <= 1e-7)
-    tests['num_vars'] = (p0['num_vars'] == p1['num_vars'])
-    tests['bounds_1'] = (len(lbs1) == 0 and len(ubs1) == 0)
-    tests['m']        = (p0['num_constrs'] + len(lbs0) + len(ubs0) == p1['num_constrs'])
-    tests['sense']    = all([v in ['<', '='] for k,v in p1['constr_sense'].items()])
-    return tests
-
-def mps_to_training_data(root):
-    from gurobipy import read
-    # Assert consistency
-    ASSERT_CONSISTENCY = True
-    # Get mps paths
-    fpaths = DatasetPLNN.get_mps_paths()
-    print('%d problems to test' % (len(fpaths)))
-    for i, fpath in enumerate(fpaths):
-        # file tag and path
-        dirname  = os.path.dirname(fpath)
-        file_tag = os.path.basename(fpath).split('.mps')[0]
-        # Extract lp problem (standardize)
-        prob, p1 = DatasetPLNN.extract_lp_problem(fpath)
-        # Check consistency against original problem
-        if ASSERT_CONSISTENCY:
-            # Original info
-            p0 = read_json(os.path.join(dirname, '%s.info' % (file_tag)))
-            tests = _test_consistency(p0, p1)
-            if not all([v for k,v in tests.items()]):
-                print('failed tests at %s' % fpath)
-                p1['consistency_tests'] = tests
-                file_tag = file_tag + '_inconsistent'
-            else:
-                p1['consistency_tests'] = None
-        # Save problem for training
-        prob_path = os.path.join(dirname, '%s.train' % (file_tag)) 
-        with open(prob_path, 'w') as outfile:
-            json.dump(prob, outfile)
-        # Save info of standardized path
-        info_path = os.path.join(dirname, '%s.traininfo' % (file_tag))
-        with open(info_path, 'w') as outfile:
-            json.dump(p1, outfile)
-    return
-
 def generate_plnn_dataset(root):
     from plnn.network_linear_approximation import LinearizedNetwork
     from plnn.model import load_snapshot_and_simplify
@@ -300,7 +236,6 @@ if __name__ == '__main__':
     dotenv.load_dotenv(dotenv.find_dotenv())
     root    = os.environ.get('ROOT')
     plnnDir = os.path.abspath(os.path.join(root, '../PLNN-verification'))
-    print(plnnDir)
     sys.path.insert(0, plnnDir)
  
     parser = argparse.ArgumentParser()
@@ -310,10 +245,6 @@ if __name__ == '__main__':
         action='store_true', help='Transform MPS to training data')
     parser.add_argument('--test', 
         action='store_true', help='Generate tests for  PLNN dataset')
-    parser.add_argument('--stats', 
-        action='store_true', help='Compute stats on PLNN dataset')
-    parser.add_argument('--test_consistency', 
-        action='store_true', help='Test consistency of PLNN dataset')
 
     args = parser.parse_args()
     if args.generate:
@@ -322,6 +253,4 @@ if __name__ == '__main__':
         mps_to_training_data(root)
     if args.test:
         test_plnn_dataset()
-    if args.stats:
-        generate_plnn_stats()
 
