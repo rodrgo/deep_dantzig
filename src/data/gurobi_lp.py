@@ -27,6 +27,10 @@ class LinProg(object):
         self._add_constraints()
         self._add_objective()
 
+    @staticmethod
+    def has_matrix_inequalities(mps_path):
+        model = read(mps_path)
+        return any([True for c in model.getConstrs() if c.Sense != '='])
 
     @staticmethod
     def getitem(mps_path):
@@ -99,6 +103,7 @@ class LinProg(object):
         lp_item = {'lp': {'A': item['A'], 'b': item['b'], 'c': item['c']},
                    'node_features': np.asarray(node_features),
                    'node_labels':   np.asarray(node_labels),
+                   'in_loss': item['in_loss'], 
                    'mps_path': mps_path}
 
         return lp_item

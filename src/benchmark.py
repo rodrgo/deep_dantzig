@@ -47,6 +47,9 @@ def dataset_factory(dataset, seed):
     if dataset == 'plnn':
         trainset = DatasetPLNN(num_lps=1, test=False, seed=seed)
         testset  = DatasetPLNN(num_lps=1, test=True , seed=seed)
+    elif dataset == 'mnist':
+        trainset = DatasetPLNN(num_lps=1, test=False, seed=seed)
+        testset  = DatasetPLNN(num_lps=1, test=True , seed=seed)
     elif dataset == 'randomlp':
         m, n     = (10, 5)
         trainset = RandomLPDataset(m=m, n=n, num_lps=1, test=False, seed=seed)
@@ -145,6 +148,8 @@ if __name__ == '__main__':
         action='store_true', help='Test on single random LP')
     parser.add_argument('--plnn', 
         action='store_true', help='Test on single PLNN problem')
+    parser.add_argument('--mnist', 
+        action='store_true', help='Test on PLNN MNIST problem')
     parser.add_argument('--cuda',
         action='store_true', default=False, help='Enable cuda')
     parser.add_argument('--device',
@@ -180,6 +185,20 @@ if __name__ == '__main__':
         bp['weight_decays']     = [0]
         bp['ps']                = [12]
         run_benchmark(outpath, 'randomlp', bp, cuda, tag)
+
+    # mnist
+    if args.mnist:
+        # Plnn mnist
+        bp = {}
+        bp['epochs']            = [10000]
+        bp['seeds']             = [3]
+        bp['batch_sizes']       = [1]
+        bp['rounds_s2v']        = [3]
+        bp['learning_rates']    = [0.01]
+        bp['momentums']         = [0.9]
+        bp['weight_decays']     = [0]
+        bp['ps']                = [40]
+        run_benchmark(outpath, 'mnist', bp, cuda, tag)
 
     # plnn
     if args.plnn:

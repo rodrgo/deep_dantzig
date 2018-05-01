@@ -22,7 +22,7 @@ def read_json(fpath):
 
 class DatasetPLNN(Dataset):
 
-    def __init__(self, num_lps=None, test=False, seed=1111):
+    def __init__(self, num_lps=None, test=False, seed=1111, dataset=None):
         # set main parameters
         # (m,n) : dimension of A
         # N     : number of datapoints
@@ -32,8 +32,12 @@ class DatasetPLNN(Dataset):
         TRAIN_PCT = 0.90
         assert(0.0 < TRAIN_PCT and TRAIN_PCT < 1.0)
         # set set for numpy
-        fpaths, fdirs = self.get_mps_paths(ext='.mps', num_lps=num_lps, seed=1111)
+        fpaths, fdirs = self.get_mps_paths(ext='.mps', num_lps=num_lps, seed=1111, dataset=dataset)
         self.lp_dirs  = fdirs
+        # Filter fpaths
+        REDUCE_LOSS_FN = True
+        if REDUCE_LOSS_FN:
+            fpaths = [f for f in fpaths if LinProg.has_matrix_inequalities(f)]
         # Get LP problems we tested with
         # Define number of training and test sets
         np.random.seed(self.seed)
@@ -60,15 +64,18 @@ class DatasetPLNN(Dataset):
         return self.lp_dirs
 
     @staticmethod
-    def get_lp_dir():
+    def get_lp_dir(self, dataset=None):
         dotenv.load_dotenv(dotenv.find_dotenv())
         root    = os.environ.get('ROOT')
-        lp_dir  = os.path.join(root, 'data/plnn')
+        if dataset == 'mnist':
+            lp_dir  = os.path.join(root, 'data/mnist/problems')
+        else:
+            lp_dir  = os.path.join(root, 'data/plnn')
         return lp_dir
 
     @staticmethod
-    def get_mps_paths(ext='.mps', num_lps=None, seed=1111):
-        h  = DatasetPLNN.get_lp_dir()
+    def get_mps_paths(ext='.mps', num_lps=None, seed=1111, dataset=None):
+        h  = DatasetPLNN.get_lp_dir(dataset)
         ds = [os.path.join(h,f) for f in os.listdir(h) if f.startswith('problem_')]
         ds = [d for d in ds if os.path.isdir(d)]
         if num_lps and num_lps < len(ds):
@@ -231,6 +238,35 @@ def generate_plnn_dataset(root):
         with open(rlv, 'r') as rlv_infile:
             network, domain = load_snapshot_and_simplify(rlv_infile, LinearizedNetwork, save_params)
 
+def generate_plnn_mnist_dataset(root):
+    from plnn.network_linear_approximation import LinearizedNetwork
+    from plnn.model import load_snapshot_and_simplify
+
+    '''
+    Similar to generate_plnn_dataset
+    '''
+
+    # Build relevant paths
+    plnnDir   = os.path.join(root, '../PLNN-verification')
+    data_mnist = os.path.join(root, 'data/mnist')
+
+    # Get paths
+    rlvs = []
+    for root, dirs, files in os.walk(data_mnist):
+        for name in files:
+            if name.endswith((".rlv")):
+                rlvs.append(os.path.join(root, name))
+
+    # First path in each line is the property that
+    # the PLNN wants to prove
+    for i, rlv in enumerate(rlvs):
+        save_params = {'fpath': os.path.join(data_mnist, 'problems'),
+            'tag': 'problem_%d' % (i),
+            'source': rlv.split('..')[-1]}
+        print(save_params['tag'])
+        with open(rlv, 'r') as rlv_infile:
+            network, domain = load_snapshot_and_simplify(rlv_infile, LinearizedNetwork, save_params)
+
 if __name__ == '__main__':
     import argparse
     dotenv.load_dotenv(dotenv.find_dotenv())
@@ -241,12 +277,16 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--generate', 
         action='store_true', help='Generate PLNN dataset')
+    parser.add_argument('--generatemnist', 
+        action='store_true', help='Generate PLNN MNIST dataset')
     parser.add_argument('--transform', 
         action='store_true', help='Transform MPS to training data')
     parser.add_argument('--test', 
         action='store_true', help='Generate tests for  PLNN dataset')
 
     args = parser.parse_args()
+    if args.generatemnist:
+        generate_plnn_mnist_dataset(root)
     if args.generate:
         generate_plnn_dataset(root)
     if args.transform:

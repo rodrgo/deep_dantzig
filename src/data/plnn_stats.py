@@ -107,23 +107,27 @@ def timing_forward_pass(vis):
         # Create dataset
         pset = DatasetPLNN(num_lps=1)
         pset.override_fpaths(lps)
-        ploader = DataLoader(pset, batch_size=1, shuffle=True)
+        ploader = DataLoader(pset, batch_size=1, shuffle=False)
         for data in ploader:
             # get input data
             x = data['lp']
             x['node_features'] = data['node_features']
-            # get timing for gurobi
-            start = timer()
-            yhat  = model(x)
-            end   = timer()
-            forward_time = end - start
-            # get more info
-            infopath = os.path.splitext(data['mps_path'][0])[0] + '.info'
-            pparams = infopath_2_params(infopath)
-            gurobi_time = pparams['time']
-            m = pparams['m']
-            ratio = forward_time/gurobi_time
-            fdata.append({'m': m, 'time_ratio': ratio, 'fpath': infopath})
+            x['in_loss'] = data['in_loss']
+            if x['in_loss']:
+                # get timing for gurobi
+                start = timer()
+                yhat  = model(x)
+                end   = timer()
+                forward_time = end - start
+                # get more info
+                infopath = os.path.splitext(data['mps_path'][0])[0] + '.info'
+                pparams = infopath_2_params(infopath)
+                gurobi_time = pparams['time']
+                m = pparams['m']
+                ratio = forward_time/gurobi_time
+                fdata.append({'m': m, 'forward_time': forward_time, 'time_ratio': ratio, 'fpath': infopath})
+
+    print('average = %g, min=%g, max=%g' % (sum([d['forward_time'] for d in fdata])/len(fdata), min([d['forward_time'] for d in fdata]), max([d['forward_time'] for d in fdata])))
 
     index = 1
     pt_text = ['%s' % (f['fpath']) for f in fdata]

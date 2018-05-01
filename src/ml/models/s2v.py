@@ -176,25 +176,37 @@ class Model(nn.Module):
         b = lp_data['b']
         c = lp_data['c']
         node_features = lp_data['node_features'].type(self.dtype)
+        in_loss = lp_data['in_loss']
 
         m = max(list(b.size()))
        
-        Ab = np.concatenate((A.squeeze(0), np.transpose(b)), axis=1)
-        Ab = Ab / np.max(np.absolute(Ab))
+        if True:
+            if self.with_cuda:
+                A = A.cuda()
+                b = b.cuda()
+                c = c.cuda()
+            Ab = torch.cat((A.squeeze(0), b.squeeze(0).unsqueeze(1)), 1)
+            Ab = torch.div(Ab, torch.max(torch.max(torch.abs(Ab),0)[0]))
+            c0 = torch.from_numpy(np.concatenate((c, np.zeros((1,1))), axis=1)).type(self.dtype)
+            c0 = torch.div(c0, torch.max(torch.abs(c0)))
+            G  = torch.cat((Ab.type(self.dtype), c0.type(self.dtype)), 0)
+        else:
+            Ab = np.concatenate((A.squeeze(0), np.transpose(b)), axis=1)
+            Ab = Ab / np.max(np.absolute(Ab))
 
-        c0 = np.concatenate((c, np.zeros((1,1))), axis=1)
-        c0 = c0 / np.max(np.absolute(c0))
+            c0 = np.concatenate((c, np.zeros((1,1))), axis=1)
+            c0 = c0 / np.max(np.absolute(c0))
 
-        # Create single element from this
-        # G.shape = (m+1, n+1)
-        # W = G*G' will give the weights w(u,v)
-        G = np.concatenate((Ab, c0), axis=0)
+            # Create single element from this
+            # G.shape = (m+1, n+1)
+            # W = G*G' will give the weights w(u,v)
+            G = np.concatenate((Ab, c0), axis=0)
 
-        # Torchify
-        G = torch.from_numpy(G).type(self.dtype)
-        if self.with_cuda:
-            node_features = node_features.cuda()
-            G = G.cuda()
+            # Torchify
+            G = torch.from_numpy(G).type(self.dtype)
+            if self.with_cuda:
+                node_features = node_features.cuda()
+                G = G.cuda()
 
         node_features = Variable(node_features)
         G = Variable(G)
@@ -214,7 +226,7 @@ class Model(nn.Module):
 
         mu = Variable(torch.zeros(self.p,m+1).type(self.dtype))
         if self.with_cuda:
-            mu = mu.cuda() 
+            mu = mu.cuda()
 
         # structure2vec
         #   Create embeddings
@@ -225,11 +237,18 @@ class Model(nn.Module):
         # Sum of all columns
         scale  = 1/(float(m))
         term6  = self.theta6r.matmul(scale * mu[:,:m].sum(dim=1)) + self.theta6c.matmul(mu[:,m])
-        term7  = self.theta7.matmul(mu[:,:m])
-        feats  = F.relu(torch.cat((term6.unsqueeze(1).repeat(1,m), term7),0))
 
-        # ((m, 2, 2p), (m, 2p, 1))
-        scores = torch.bmm(self.theta8.unsqueeze(0).repeat(m,1,1), torch.t(feats).unsqueeze(2)).squeeze(2)
+        ALL_IN_LOSS = False
+        if ALL_IN_LOSS:
+            term7  = self.theta7.matmul(mu[:,:m])
+            feats  = F.relu(torch.cat((term6.unsqueeze(1).repeat(1,m), term7),0))
+            # ((m, 2, 2p), (m, 2p, 1))
+            scores = torch.bmm(self.theta8.unsqueeze(0).repeat(m,1,1), torch.t(feats).unsqueeze(2)).squeeze(2)
+        else:
+            term7  = self.theta7.matmul(mu[:,in_loss])
+            feats  = F.relu(torch.cat((term6.unsqueeze(1).repeat(1,len(in_loss)), term7),0))
+            # ((m, 2, 2p), (m, 2p, 1))
+            scores = torch.bmm(self.theta8.unsqueeze(0).repeat(len(in_loss),1,1), torch.t(feats).unsqueeze(2)).squeeze(2)
 
         return scores
 

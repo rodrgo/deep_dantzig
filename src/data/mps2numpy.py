@@ -106,6 +106,10 @@ def model2numpy(model, standardize=True):
     for k in bname2index.keys(): 
         cnames[k] = bname2index[k]
 
+    # Compile loss function indicators:
+    # (Only want to classify inequality constraints in A)
+    in_loss = [cnames[k] for k in cnames.keys() if csenses[k] == '<' and not k in bname2index]
+
     c[:] = model.Obj
     sense = model.ModelSense
     if standardize and sense == -1:
@@ -120,7 +124,7 @@ def model2numpy(model, standardize=True):
 
     lp_item = {'A': A, 'b': b, 'c': c, 
         'obj': obj, 'csenses': csenses, 
-        'cnames': cnames, 'bounds': bounds}
+        'cnames': cnames, 'bounds': bounds, 'in_loss': in_loss}
 
     return lp_item
 

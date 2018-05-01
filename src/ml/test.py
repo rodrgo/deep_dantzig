@@ -16,11 +16,14 @@ def get_accuracy(testloader, net, verbose=False, cuda=False):
         x = data['lp']
         x['node_features'] = data['node_features']
 
+        in_loss = [int(p) for p in data['in_loss']]
+        x['in_loss'] = in_loss
+
         # True labels
         y  = Variable(LongTensor(torch.from_numpy(y), cuda=cuda))
         if cuda:
             y = y.cpu()
-        y = y.squeeze(0)
+        y = y.squeeze(0)[in_loss]
 
         # Predicted label
         yhat  = net(x)
@@ -41,8 +44,8 @@ def get_accuracy(testloader, net, verbose=False, cuda=False):
         fns += fn
 
     acc         = (tps + tns)/(tps + fps + tns + fns)
-    precision   = tps/(tps + fps)
-    recall      = tps/(tps + fns)
+    precision   = tps/max((tps + fps), 1)
+    recall      = tps/max((tps + fns), 1)
 
     res = {}
     res['accuracy']     = acc

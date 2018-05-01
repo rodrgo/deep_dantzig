@@ -112,6 +112,7 @@ def plot_in_visdom(vis, results):
 def plot_benchmark():
     loc     = 'output'
     tag     = 'benchmark_plnn_res'
+    tag     = 'benchmark_mnist_res'
 
     fs      = FileSystem()
     fpath   = fs._infer_location(loc)

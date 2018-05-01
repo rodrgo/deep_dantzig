@@ -14,7 +14,9 @@ def batched(data, batch_size):
         dp['x']['b'] = data['lp']['b'][batch, :].unsqueeze(0)
         dp['x']['c'] = data['lp']['c'][batch, :].unsqueeze(0)
         dp['x']['node_features']  = data['node_features']
-        dp['y']  = data['node_labels'].squeeze(0)
+        in_loss = [int(p) for p in data['in_loss']]
+        dp['x']['in_loss'] = in_loss
+        dp['y']  = data['node_labels'].squeeze(0)[in_loss]
         yield dp
 
 def total_loss(testloader, model, criterion, cuda=False):
