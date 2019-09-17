@@ -15,6 +15,7 @@ from tqdm import tqdm
 from data.plnn_dataset import DatasetPLNN
 from gurobipy import read
 from utils.to_visdom import color_hue
+from utils.fs import FileSystem
 
 from timeit import default_timer as timer
 
@@ -33,7 +34,8 @@ def plot_problem_stats(vis, df):
         # active_type in ['active', 'bound_active', 'matrix_active']
         df['pct_active_type'] = df[active_type]/df['m']
         fs      = [x.split('.mps')[0] for x in df['source'].tolist()]
-        pt_text = ['%s\n(m,n)=(%d,%d)' % (f, m, n) for f, m, n in zip(fs, df['m'].tolist(), df['n'].tolist())]
+        fss     = [os.path.split(f)[0].split('/')[-1] for f in fs]
+        pt_text = ['%s\n(m,n)=(%d,%d)' % (f, m, n) for f, m, n in zip(fss, df['m'].tolist(), df['n'].tolist())]
         trace = dict(x=df['m'].tolist(), y=df['pct_active_type'].tolist(), 
                     mode="markers", type='custom',
                     marker={'color': color_hue(index, 0.4), 'symbol': 'dot', 'size': "3"},
@@ -41,10 +43,14 @@ def plot_problem_stats(vis, df):
         return trace
 
     # Plot
-    traces = [None] * 3
-    traces[0] = active_vs_m(df, 0, 'active', 'total')
-    traces[1] = active_vs_m(df, 1, 'bounds_active', 'bounds')
-    traces[2] = active_vs_m(df, 2, 'matrix_active', 'matrix')
+    if False:
+        traces = [None] * 3
+        traces[0] = active_vs_m(df, 0, 'active', 'total')
+        traces[1] = active_vs_m(df, 1, 'bounds_active', 'bounds')
+        traces[2] = active_vs_m(df, 2, 'matrix_active', 'matrix')
+    else:
+        traces = [None] * 1
+        traces[0] = active_vs_m(df, 2, 'matrix_active', 'matrix')
 
     title = 'Percentage active vs m'
     layout = dict(title=title, xaxis={'title': 'm'}, yaxis={'title': 'pct_active'})
@@ -176,7 +182,38 @@ def infopath_2_params(fpath):
     d['n']             = d['num_vars']
     d['m']             = d['num_constrs'] + d['num_bounds']
     d['active']        = d['matrix_active'] + d['bounds_active']
+    d['has_matrix_ineq'] = d['matrix_ineq'] > 0
     return d
+
+def get_mnist_info():
+    # Get paths
+    fs = FileSystem()
+    fname = 'mnist_info.json'
+    if fs.exists('mnist', fname):
+        info = fs.read_json('mnist', fname)
+    else:
+        print('MNIST info does not exist')
+        fpaths, fdirs = DatasetPLNN.get_mps_paths(ext='.info', dataset='mnist')
+        print(len(fpaths))
+        info = []
+        for fpath in tqdm(fpaths):
+            d = infopath_2_params(fpath)
+            info.append(d)
+        fs.write_json(info, 'mnist', 'mnist_info.json') 
+    return info
+    
+
+def plot_mnist_info(info):
+
+    assert(all([x['sc'] == 2 for x in info]))
+
+    df = pd.DataFrame(info)
+
+    df = df.drop(columns=['sc'])
+
+    # Plot
+    vis = visdom.Visdom()
+    plot_problem_stats(vis, df)
 
 def stats():
 
@@ -197,6 +234,7 @@ def stats():
     vis = visdom.Visdom()
     plot_problem_stats(vis, df)
 
+
 def timing():
 
     # Plot
@@ -211,10 +249,15 @@ if __name__ == '__main__':
         action='store_true', help='Stats about problems')
     parser.add_argument('--timing', 
         action='store_true', help='Timing of forward pass')
+    parser.add_argument('--mnist', 
+        action='store_true', help='Stats on mnist dataset')
 
     args = parser.parse_args()
     if args.stats:
         stats()
     if args.timing:
         timing()
+    if args.mnist:
+        info = get_mnist_info()
+        plot_mnist_info(info)
 

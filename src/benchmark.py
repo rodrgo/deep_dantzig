@@ -43,54 +43,45 @@ def save(save_path, stype, res, model=None):
         torch.save(model.state_dict(), fpath)
     return
 
-def dataset_factory(dataset, seed):
-    if dataset == 'plnn':
-        trainset = DatasetPLNN(num_lps=1, test=False, seed=seed)
-        testset  = DatasetPLNN(num_lps=1, test=True , seed=seed)
-    elif dataset == 'mnist':
-        trainset = DatasetPLNN(num_lps=1, test=False, seed=seed)
-        testset  = DatasetPLNN(num_lps=1, test=True , seed=seed)
-    elif dataset == 'randomlp':
-        m, n     = (10, 5)
-        trainset = RandomLPDataset(m=m, n=n, num_lps=1, test=False, seed=seed)
-        testset  = RandomLPDataset(m=m, n=n, num_lps=1, test=True , seed=seed)
-    else:
-        raise ValueError('Dataset not recognised')
-    return trainset, testset
-
-def run_experiment(params, dataset, seed=1111, cuda=False, tag=None):
-
-    # params
-    epochs  = params['num_epochs']
-    bs      = params['batch_size']
-    t       = params['rounds_s2v']
-    lr      = params['learning_rate']
-    mtm     = params['momentum']
-    wd      = params['weight_decay']
-    p       = params['p']
+def run_experiment_batch(dataset, graph, elem_type, 
+    num_elems, p, rounds_s2v, epochs, batch_size, learning_rate, 
+    momentum, weight_decay, seed, cuda=True, tag=None):
 
     # datasets
-    trainset, testset = dataset_factory(dataset, seed)
-    trainloader = DataLoader(trainset, batch_size=1, shuffle=True)
-    testloader  = DataLoader(testset,  batch_size=1,  shuffle=False)
+    trainset = DatasetPLNN(dataset, graph, num_elems, elem_type, seed, test=False)
+    testset  = DatasetPLNN(dataset, graph, num_elems, elem_type, seed, test=True)
 
-    print('%d seed LPs in trainset' % (len(trainset.lp_dirs)))
-    print('%d problems in trainset' % (len(trainset)))
+    trainloader = DataLoader(trainset, batch_size=batch_size,  shuffle=True)
+    testloader  = DataLoader(testset,  batch_size=batch_size,  shuffle=False)
 
     # model
-    model       = Model(p, t, cuda=cuda)
+    model       = Model(graph, p, rounds_s2v, cuda)
     if cuda:
         model   = model.cuda()
 
     # optimization
-    criterion   = nn.CrossEntropyLoss()
-    optimizer   = optim.SGD(model.parameters(), lr=lr, momentum=mtm, weight_decay=wd)
-    results     = train_net(model, criterion, optimizer, trainloader, 
-                            epochs, bs, testloader, verbose=True, cuda=cuda)
+    '''
+    Class index `(0 to C-1, where C = number of classes)`
+    reduce=True and size_average=False (Losses summed for each minibatch):
+        \ell(x, y) = \sum_{n=1}^N l_n
+    weight=[num_pos/num_total, num_neg/num_total]
+    '''
+
+    if cuda:
+        weight = Variable(torch.cuda.FloatTensor(trainset.weight))
+    else:
+        weight = Variable(torch.FloatTensor(trainset.weight))
+
+    criterion = nn.NLLLoss(weight=weight, size_average=False, reduce=True)
+    optimizer = optim.SGD(model.parameters(), 
+        lr=learning_rate, momentum=momentum, weight_decay=weight_decay)
+    #optimizer   = optim.Adam(model.parameters(), lr=lr, weight_decay=wd)
+    results   = train_net(model, criterion, optimizer, trainloader, 
+        testloader, epochs, batch_size, cuda=cuda)
 
     # record
     out             = {}
-    out['lps']      = trainset.get_lp_params()
+    out['lps']      = trainset.get_source_dir()
     out['results']  = results
 
     d               = {}
@@ -103,34 +94,14 @@ def run_experiment(params, dataset, seed=1111, cuda=False, tag=None):
 
     return d, model
 
-def wrap_params(ep, bs, t, lr, mtm, wd, p):
-    params = {}
-    params['num_epochs']    = ep
-    params['batch_size']    = bs
-    params['rounds_s2v']    = t
-    params['learning_rate'] = lr
-    params['momentum']      = mtm
-    params['weight_decay']  = wd
-    params['p']             = p
-    return params
-
-def run_benchmark(save_path, dataset, benchmark_params, cuda=False, tag=None):
-
-    # Params
-    sds     = benchmark_params['seeds']
-    eps     = benchmark_params['epochs']
-    bss     = benchmark_params['batch_sizes']
-    ts      = benchmark_params['rounds_s2v']
-    lrs     = benchmark_params['learning_rates']
-    mtms    = benchmark_params['momentums']
-    wds     = benchmark_params['weight_decays']
-    ps      = benchmark_params['ps']
-
-    # Benchmark 
-    for seed, ep, bs, t, lr, mtm, wd, p in itertools.product(sds, eps, bss, ts, lrs, mtms, wds, ps):
-        params = wrap_params(ep, bs, t, lr, mtm, wd, p)
-        print(','.join(['{0}={1}'.format(k,v) for k,v in params.items()]))
-        res, model = run_experiment(params, dataset, seed, cuda, tag)
+def run_benchmark(params, save_path, cuda=False, tag=None):
+    # params is a dictionary of key-list pairs
+    assert(all([type(v) is list for k,v in params.items()]))
+    params_keys = params.keys()
+    for params_values in itertools.product(*[params[k] for k in params_keys]):
+        params_batch = {k:v for k,v in zip(params_keys, params_values)}
+        print(','.join(['{0}={1}'.format(k,v) for k,v in params_batch.items()]))
+        res, model = run_experiment_batch(**params_batch, cuda=cuda, tag=tag)
         save(save_path, 'benchmark', res, model)
     return
 
@@ -144,23 +115,32 @@ if __name__ == '__main__':
 
     # Parser
     parser = argparse.ArgumentParser()
-    parser.add_argument('--randomlp', 
-        action='store_true', help='Test on single random LP')
-    parser.add_argument('--plnn', 
-        action='store_true', help='Test on single PLNN problem')
-    parser.add_argument('--mnist', 
-        action='store_true', help='Test on PLNN MNIST problem')
-    parser.add_argument('--cuda',
-        action='store_true', default=False, help='Enable cuda')
-    parser.add_argument('--device',
-       default=0, help='Enable cuda')
+
+    parser.add_argument('--dataset', 
+        default='mnist', help='Chooses dataset (mnist, plnn, randomlp)')
+    parser.add_argument('--graph', 
+        default='bipartite', help='Chooses graph structure (complete or bipartite)')
     parser.add_argument('--tag', '-t', 
        default=None, help='Experiment tags')
 
+    # CUDA PARAMS
+
+    parser.add_argument('--cuda',
+        action='store_true', default=True, help='Enable cuda')
+    parser.add_argument('--device',
+       default=1, help='Enable cuda')
+
+
     args = parser.parse_args()
 
-    # tag
-    tag = args.tag
+    dataset = args.dataset
+    graph   = args.graph
+    tag     = args.tag
+
+    assert(dataset in ['mnist', 'plnn'])
+    assert(graph   in ['complete', 'bipartite'])
+
+    print('Running:\n\tdataset=%s\n\tgraph=%s\n\ttag=%s' % (dataset, graph, tag))
 
     # cuda
     cuda = False
@@ -168,48 +148,30 @@ if __name__ == '__main__':
         device = int(args.device)
         if torch.cuda.is_available():
             os.environ['CUDA_VISIBLE_DEVICES'] = str(device)
-            #torch.cuda.set_device(device)
             cuda = True
         else:
             print('CUDA is not available')
 
-    # randomlp
-    if args.randomlp:
-        bp = {}
-        bp['epochs']            = [150]
-        bp['seeds']             = [0, 3]
-        bp['batch_sizes']       = [1]
-        bp['rounds_s2v']        = [1, 2, 4]
-        bp['learning_rates']    = [0.01, 0.001]
-        bp['momentums']         = [0.9]
-        bp['weight_decays']     = [0]
-        bp['ps']                = [12]
-        run_benchmark(outpath, 'randomlp', bp, cuda, tag)
+    params = {}
+    params['seed']               = [3]
 
-    # mnist
-    if args.mnist:
-        # Plnn mnist
-        bp = {}
-        bp['epochs']            = [10000]
-        bp['seeds']             = [3]
-        bp['batch_sizes']       = [1]
-        bp['rounds_s2v']        = [3]
-        bp['learning_rates']    = [0.01]
-        bp['momentums']         = [0.9]
-        bp['weight_decays']     = [0]
-        bp['ps']                = [40]
-        run_benchmark(outpath, 'mnist', bp, cuda, tag)
+    # dataset
+    params['dataset']            = [dataset]
+    params['graph']              = [graph]
+    params['elem_type']          = ['lp']
+    params['num_elems']          = [None]
+    params['num_elems']          = [10]
 
-    # plnn
-    if args.plnn:
-        bp = {}
-        bp['epochs']            = [1000]
-        bp['seeds']             = [3, 4]
-        bp['batch_sizes']       = [1]
-        bp['rounds_s2v']        = [1, 2, 3]
-        bp['learning_rates']    = [0.01]
-        bp['momentums']         = [0.9]
-        bp['weight_decays']     = [0]
-        bp['ps']                = [35, 40, 45]
-        run_benchmark(outpath, 'plnn', bp, cuda, tag)
+    # model
+    params['p']                  = [40]
+    params['rounds_s2v']         = [3]
+
+    # optim
+    params['epochs']             = [5000]
+    params['batch_size']         = [1]
+    params['learning_rate']      = [0.001]
+    params['momentum']           = [0.9]
+    params['weight_decay']       = [0]
+
+    run_benchmark(params, outpath, cuda, tag)
 

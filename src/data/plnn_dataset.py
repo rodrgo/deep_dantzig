@@ -10,7 +10,7 @@ import dotenv
 import json
 
 from data.mps2numpy import mps2numpy  
-from data.gurobi_lp import LinProg
+from data.gurobi_lp import LinProg as LP
 from utils.toolbox import np_to_sparse_serial, sparse_serial_to_np
 
 from timeit import default_timer as timer
@@ -22,30 +22,132 @@ def read_json(fpath):
 
 class DatasetPLNN(Dataset):
 
-    def __init__(self, num_lps=None, test=False, seed=1111, dataset=None):
-        # set main parameters
-        # (m,n) : dimension of A
-        # N     : number of datapoints
+    def __init__(self, dataset='mnist', graph='bipartite', 
+        num_elems=None, elem_type='lp', seed=1111, test=False): 
+
+        '''
+        Training can be done at several levels:
+            + property:     Train and predict at property levels
+            + LP:           Fix property. Train and predict at LP level
+            + constraint:   Fix property and LP (take largest LP). Train and predict at constraint level
+
+        For 'property' and 'LP', iterator runs over fpaths (return self._fpaths for iterator)
+        For 'constraint', iterator runs over constraints   (return ?)
+        '''
+
+        # Other params
         self.test = test
         self.seed = seed
-        # Train,test splits
-        TRAIN_PCT = 0.90
-        assert(0.0 < TRAIN_PCT and TRAIN_PCT < 1.0)
-        # set set for numpy
-        fpaths, fdirs = self.get_mps_paths(ext='.mps', num_lps=num_lps, seed=1111, dataset=dataset)
-        self.lp_dirs  = fdirs
-        # Filter fpaths
-        REDUCE_LOSS_FN = True
-        if REDUCE_LOSS_FN:
-            fpaths = [f for f in fpaths if LinProg.has_matrix_inequalities(f)]
-        # Get LP problems we tested with
-        # Define number of training and test sets
+        self.graph_structure = graph
+
+        TRAIN_PCT = 0.90 # Has to be between 0 and 1
+
+        assert(elem_type in ['property', 'lp', 'constraint'])
+
         np.random.seed(self.seed)
-        ftrain = np.random.choice(fpaths, size=int(len(fpaths) * TRAIN_PCT), replace=False)
-        if self.test:
-            self._fpaths = list(set(fpaths) - set(ftrain))
+        property_dirs = list(np.random.permutation(self.get_prop_dirs(dataset)))
+
+        if elem_type in ['property', 'lp']:
+
+            if elem_type == 'property':
+                train_props, test_props = self._train_test_split(property_dirs, num_elems, TRAIN_PCT)
+                train_lps = [os.path.join(d,f) for d in train_props for f in os.listdir(d) if f.endswith('.mps')]
+                test_lps  = [os.path.join(d,f) for d in test_props  for f in os.listdir(d) if f.endswith('.mps')]
+            elif elem_type == 'lp':
+                # choose property directory with the most problems
+                pdir = max([{'dir': pdir, 'len': len(os.listdir(pdir))} for pdir in property_dirs], key=lambda x: x['len'])['dir']
+                element_dirs = [os.path.join(pdir,f) for f in os.listdir(pdir) if f.endswith('.mps')]
+                # Get only elements with at least one inequality constraint
+                ok      = lambda d : d['num_ineq'] > 0
+                fs      = element_dirs
+                fs_ineq = [LP.ineq_num(f) for f in fs]
+                fs_ok   = [d['path'] for d in fs_ineq if ok(d)]
+                print('\t %d/%d LPs with inequality constraints' % (len(fs_ok), len(fs)))
+                train_lps, test_lps = self._train_test_split(fs_ok, num_elems, TRAIN_PCT)
+
+            if self.test:
+                print('Test set')
+                fs = test_lps 
+            else:
+                print('Train set')
+                fs = train_lps
+
+            fs_ineq = [LP.ineq_num(f) for f in fs]
+            fs_ok   = [d['path'] for d in fs_ineq if ok(d)]
+            print('\t %d/%d LPs with inequality constraints' % (len(fs_ok), len(fs)))
+
+            total_lps = len(train_lps) + len(test_lps)
+            print('(%s) %d/%d problems' % (elem_type, len(fs), total_lps))
+
+            # category split
+            n_pos         = sum([d['num_pos'] for d in fs_ineq if ok(d)])
+            n_neg         = sum([d['num_neg'] for d in fs_ineq if ok(d)])
+            n_eq          = sum([d['num_eq'] for d in fs_ineq if ok(d)])
+            n_ineq        = sum([d['num_ineq'] for d in fs_ineq if ok(d)])
+            n_inact_ineq  = sum([d['num_inactive_ineq'] for d in fs_ineq if ok(d)])
+            n_total       = n_pos + n_neg 
+
+        elif elem_type in ['constraint']:
+            # Choose largest problem in property_dirs[0]
+            pdir  = property_dirs[0]
+            fs    = [os.path.join(pdir,f) for f in os.listdir(pdir) if f.endswith('.mps')]
+            d  = max([LP.ineq_num(f) for f in fs], key=lambda x:x['num_constrs'])
+            fs_ok = [d['path']]
+
+            # category split
+            n_pos         = d['num_pos']
+            n_neg         = d['num_neg']
+            n_eq          = d['num_eq']
+            n_ineq        = d['num_ineq']
+            n_inact_ineq  = d['num_inactive_ineq']
+            n_total       = n_pos + n_neg
+
         else:
-            self._fpaths = ftrain
+            raise ValueError('elem_type not recognised')
+
+        self._fpaths        = fs_ok
+        self.n_pos          = n_pos
+        self.n_neg          = n_neg
+        self.n_eq           = n_eq
+        self.n_ineq         = n_ineq
+        self.n_inact_ineq   = n_inact_ineq
+        self.n_total        = n_total
+
+        self.print_baselines()
+
+        self.weight = [n_pos/n_total, n_neg/n_total]
+        print(self.weight)
+
+        # Load all data
+        self.__items = []
+        for fpath in self._fpaths:
+            self.__items.append(self._fpath2item(fpath))
+
+    def _fpath2item(self, fpath):
+        if self.graph_structure == 'complete':
+            item = LP.getitem_complete(fpath)
+        elif self.graph_structure == 'bipartite':
+            item = LP.getitem_bipartite(fpath)
+        else:
+            raise(ValueError)
+        return item
+
+    def print_baselines(self):
+        if self.test:
+            btype = 'Test'
+        else:
+            btype = 'Train'
+        print('%s set' % (btype))
+        print('%d total LPs' % (len(self._fpaths)))
+        print('\t %d total constraints\n\
+               \t %d positive\n\
+               \t %d negative\n\
+               \t %d equality\n\
+               \t %d inequality\n\
+               \t %d active_inequality\n'
+               % (self.n_total, self.n_pos, self.n_neg, self.n_eq, self.n_ineq,
+                   self.n_inact_ineq))
+        return
 
     def override_fpaths(self, lps):
         fpaths = [os.path.join(h,f) for h in lps for f in os.listdir(h) if f.endswith('.mps')]
@@ -53,18 +155,39 @@ class DatasetPLNN(Dataset):
         return
 
     def __len__(self):
-        return len(self._fpaths)
+        return len(self.__items)
 
     def __getitem__(self, idx):
-        fpath = self._fpaths[idx]
-        item = LinProg.getitem(fpath)
+        item = self.__items[idx]
         return item
 
-    def get_lp_params(self):
-        return self.lp_dirs
+    def get_source_dir(self):
+        return list(set([os.path.dirname(f) for f in self._fpaths]))
+
+    def _train_test_split(self, items, num_items=None, TRAIN_PCT=0.90):
+
+        assert(len(items) > 1)
+        items = list(np.random.permutation(items))
+        if not num_items is None:
+            assert(num_items > 1)
+            if num_items <= len(items):
+                items = items[:num_items]
+            else:
+                raise(ValueError('num_items > len(items)'))
+
+        N_train = min(int(len(items) * TRAIN_PCT), len(items) - 1)
+        N_test  = len(items) - N_train
+
+        assert(0 < N_train and N_train < len(items))
+        assert(0 < N_test  and N_test  < len(items))
+
+        test_items  = items[N_train:] if N_test  > 1 else [items[-1]] 
+        train_items = items[:N_train] if N_train > 1 else [items[0]] 
+
+        return train_items, test_items
 
     @staticmethod
-    def get_lp_dir(self, dataset=None):
+    def get_lp_dir(dataset=None):
         dotenv.load_dotenv(dotenv.find_dotenv())
         root    = os.environ.get('ROOT')
         if dataset == 'mnist':
@@ -72,6 +195,12 @@ class DatasetPLNN(Dataset):
         else:
             lp_dir  = os.path.join(root, 'data/plnn')
         return lp_dir
+
+    @staticmethod
+    def get_prop_dirs(dataset):
+        h  = DatasetPLNN.get_lp_dir(dataset)
+        ds = [os.path.join(h,f) for f in os.listdir(h) if f.startswith('problem_')]
+        return ds
 
     @staticmethod
     def get_mps_paths(ext='.mps', num_lps=None, seed=1111, dataset=None):

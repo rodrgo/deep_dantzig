@@ -58,7 +58,7 @@ def main():
     n  = 5 
     m  = 10
     p  = 12
-    Ts = [0, 1, 2, 3, 4]
+    Ts = [4]
 
     # Dataset params
     N  = 2000
@@ -66,16 +66,18 @@ def main():
     # Opt Params
     lr              = 0.001
     momentum        = 0.9
-    weight_decay    = 0.01
-    num_epochs      = 4
+    weight_decay    = 0
+    num_epochs      = 4 
+
+    seed = 0
 
     # ----------------
     # Datasets
     # ----------------
 
     # Training and testing dataset
-    trainset = RandomLPDataset(m=m, n=n, N=N, num_lps=1, test=False)
-    testset  = RandomLPDataset(m=m, n=n, N=m, num_lps=1, test=True)
+    trainset = RandomLPDataset(m=m, n=n, N=N, num_lps=1, test=False, seed=seed)
+    testset  = RandomLPDataset(m=m, n=n, N=m, num_lps=1, test=True, seed=seed)
 
     trainloader = torch.utils.data.DataLoader(trainset,
             batch_size=1, shuffle=True, num_workers=1)
@@ -101,6 +103,8 @@ def main():
         acc         = test_binary_classification(testloader, net, verbose=True)
         # record
         results[T]  = [losses, acc]
+
+    sys.exit()
 
     # -------------------
     # Plot

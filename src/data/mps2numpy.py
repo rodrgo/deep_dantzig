@@ -37,7 +37,6 @@ def bounds2numpy(model, m):
         except AttributeError:
             ub = 1e100
         return True if ub < 1e100 else False
-
     vs      = model.getVars()
     bs      = []
     constrs = []

@@ -7,214 +7,156 @@ import sys
 import numpy as np
 
 class Model(nn.Module):
+    '''
+    This implements a variation of the structure2vec 
+    message passing procedure, presented in
+        Dai et al. - "Learning Combinatorial Optimization
+        Algorithms over Graphs"
+        https://arxiv.org/pdf/1704.01665.pdf
+    '''
 
-    def __init__(self, p, T, cuda=False):
+    logsoftmax = nn.LogSoftmax(dim=1)
+    softmax    = nn.Softmax(dim=1)
+
+    def __init__(self, graph, p, rounds_s2v, on_cuda=False):
+        # p: Dimension of embedding space
+
         super(Model, self).__init__()
-        self.with_cuda = cuda 
-        if self.with_cuda:
+        self.torch_version = torch.__version__ 
+
+        self.verbose = False
+
+        self.on_cuda = on_cuda 
+        if self.on_cuda:
             self.dtype = torch.cuda.FloatTensor
         else:
             self.dtype = torch.FloatTensor
-        '''
-        This implements a variation of the structure2vec 
-        message passing procedure, presented in
-            Dai et al. - "Learning Combinatorial Optimization
-            Algorithms over Graphs"
-            https://arxiv.org/pdf/1704.01665.pdf
-        
-        mu_     = mu
-        mu[v]   = relu(  theta1r  * f(v)                                            if v <  m 
-                       + theta1c  * f(v)                                            if v == m
-                       + theta2rr * mu_[Nrr(v)].sum()                               if v <  m
-                       + theta2rc * mu_[Nrc(v)].sum()                               if v <  m
-                       + theta2cr * mu_[Ncr(v)].sum()                               if v == m
-                       + theta3rr * sum([relu(theta4rr * w(v,u)) for u in Nrr(v)])  if v <  m
-                       + theta3rc * sum([relu(theta4rc * w(v,u)) for u in Nrc(v)])  if v <  m
-                       + theta3cr * sum([relu(theta4cr * w(v,u)) for u in Ncr(v)])  if v == m
-                       )
-        where,
-            w(v,u) = f(v)*f(u)
-        and
-            f(v) = normalised((A[v,:], b[v])) if v <  m
-            f(v) = normalised((c     , 0   )) if v == m
 
-        NOTES:
-            if v <  m,
-                mu_[Nrr(v)].sum() == C - mu_[v] for some constant vector C
-                mu_[Nrc(v)].sum() == mu_[m]
-            if v == m,
-                mu_[Ncr(v)].sum() == C2         for some constant vector C2
-        '''
+        self.graph = graph
+        self.p     = p
+        self.T     = rounds_s2v
+        print('rounds_s2v: %d ' % (self.T))
 
-        self.torch_version = torch.__version__ 
+        if self.graph == 'bipartite':
+            self._init_bipartite()
+        elif self.graph == 'complete':
+            self._init_complete()
 
-        # Types
-        # @params
-        # Problem is of dimension (m,n)
-        # p: Dimension of feature space
-        # T: Number of rounds in message-passing
-        self.p = p
-        self.T = T 
+    def forward(self, item):
 
-        # Scaling to reduce variance
-        scale = lambda x : math.sqrt(1/x)
+        if self.graph == 'complete':
+            scores_out = self._forward_complete(item)
+        elif self.graph == 'bipartite':
+            scores_out = self._forward_bipartite(item)
+        else:
+            raise(ValueError('Graph not recognised'))
 
-        # -------------------
-        # theta1's
-        # -------------------
-        self.theta1 = nn.Parameter(torch.randn(p,1).type(self.dtype), requires_grad=True)
-
-        # -------------------
-        # theta2's
-        # -------------------
-        # Message passing: rows -> rows
-        self.theta2rr = nn.Parameter(scale(p) * torch.randn(p,p).type(self.dtype), requires_grad=True)
-        # Message passing: rows -> c
-        self.theta2rc = nn.Parameter(scale(p) * torch.randn(p,p).type(self.dtype), requires_grad=True)
-        # Message passing: c    -> rows
-        self.theta2cr = nn.Parameter(scale(p) * torch.randn(p,p).type(self.dtype), requires_grad=True)
-
-        # -------------------
-        # theta3's
-        # -------------------
-        # Message passing: rows -> rows 
-        self.theta3rr = nn.Parameter(scale(p) * torch.randn(p,p).type(self.dtype), requires_grad=True)
-        # Message passing: rows -> c
-        self.theta3rc = nn.Parameter(scale(p) * torch.randn(p,p).type(self.dtype), requires_grad=True)
-        # Message passing: c -> rows
-        self.theta3cr = nn.Parameter(scale(p) * torch.randn(p,p).type(self.dtype), requires_grad=True)
-
-        # -------------------
-        # theta4's
-        # -------------------
-        # Message passing: rows -> rows 
-        self.theta4rr = nn.Parameter(scale(p) * torch.randn(p,1).type(self.dtype), requires_grad=True)
-        # Message passing: rows -> c
-        self.theta4rc = nn.Parameter(scale(p) * torch.randn(p,1).type(self.dtype), requires_grad=True)
-        # Message passing: c -> rows
-        self.theta4cr = nn.Parameter(scale(p) * torch.randn(p,1).type(self.dtype), requires_grad=True)
-
-        # -------------------
-        # theta6's
-        # -------------------
-        # Aggregators
-        self.theta6r = nn.Parameter(scale(p) * torch.randn(p,p).type(self.dtype), requires_grad=True)
-        self.theta6c = nn.Parameter(scale(p) * torch.randn(p,p).type(self.dtype), requires_grad=True)
-
-        # -------------------
-        # theta7
-        # -------------------
-        self.theta7 = nn.Parameter(scale(p) * torch.randn(p,p).type(self.dtype), requires_grad=True)
-
-        # -------------------
-        # Linear layer: Probabilities
-        # -------------------
-        #self.theta8 = nn.Linear(2*p, 2)
-        self.theta8 = nn.Parameter(scale(p) * torch.randn(2,2*p).type(self.dtype), requires_grad=True)
-
-        # Other placeholders
-        self.theta6 = None
+        return scores_out
 
     def require_grads(self, req=True):
         for param in self.parameters():
             param.requires_grad = req
 
-    def _s2v(self, mu, z, W, m):
-        '''
-            structure2vec
-            (self, mu, node_feat, edge_feat, adjacency)
-            z = node_features
-            W = dense symmetric matrix of edge features
-            adjacency = fully connected
-        '''
-        # TODO: Expand vs accumulate, recycle variable pointers.
+    def _init_complete(self):
 
-        scale  = 1/(float(m))
+        p = self.p
+        C = math.sqrt(1/p)
+    
+        # Bias and node features
+        self.t0 = nn.Parameter(torch.randn(p,1).type(self.dtype), requires_grad=True)
+        self.t1 = nn.Parameter(torch.randn(p,1).type(self.dtype), requires_grad=True)
+
+        # Message passing: (embeddings)
+        self.t2rr = nn.Parameter(C * torch.randn(p,p).type(self.dtype), requires_grad=True)
+        self.t2rc = nn.Parameter(C * torch.randn(p,p).type(self.dtype), requires_grad=True)
+        self.t2cr = nn.Parameter(C * torch.randn(p,p).type(self.dtype), requires_grad=True)
+
+        # Message passing: (outer products)
+        self.t3rr = nn.Parameter(C * torch.randn(p,p).type(self.dtype), requires_grad=True)
+        self.t3rc = nn.Parameter(C * torch.randn(p,p).type(self.dtype), requires_grad=True)
+        self.t3cr = nn.Parameter(C * torch.randn(p,p).type(self.dtype), requires_grad=True)
+
+        self.t4rr = nn.Parameter(C * torch.randn(p,1).type(self.dtype), requires_grad=True)
+        self.t4rc = nn.Parameter(C * torch.randn(p).type(self.dtype), requires_grad=True)
+        self.t4cr = nn.Parameter(C * torch.randn(p).type(self.dtype), requires_grad=True)
+
+        # Features
+        self.t6r  = nn.Parameter(C * torch.randn(p,p).type(self.dtype), requires_grad=True)
+        self.t6c  = nn.Parameter(C * torch.randn(p,p).type(self.dtype), requires_grad=True)
+        self.t7   = nn.Parameter(C * torch.randn(p,p).type(self.dtype), requires_grad=True)
+
+        # Probabilities/Scores
+        self.t8 = nn.Parameter(C * torch.randn(2,2*p).type(self.dtype), requires_grad=True)
+
+    def _s2v_complete(self, mu, node_feats, edge_feats):
+        '''
+            m+1 nodes, (1 for each constraint + 1 for cost vector)
+            mu: embeddings
+            node_feats: (binary vector)
+            edge_feats: (symmetric matrix)
+        '''
+
+        m = node_feats.shape[1]-1
+        C = 1/float(m)
+        W = edge_feats
         
-        '''
-        term1 = theta1 * node_features
-        '''
-        term1  =  self.theta1.matmul(z)
+        #u1 = t0 + t1 * node_feats
+        u1  = self.t0 + self.t1.matmul(node_feats)
 
-        '''
-        term2 = [theta2rr * mu[:,r] + theta2rc * mu[:,c],
-                 theta2c  * mu[:,r].sum(dim=1)] 
-        '''
-        term2rr = self.theta2rr.matmul(mu[:,:m])
-        term2rc = self.theta2rc.matmul(mu[:,[m]]).repeat(1, m)
-        term2c  = self.theta2cr.matmul(scale * mu[:,:m].sum(dim=1)).unsqueeze(1)
-        term2   = torch.cat((term2rr + term2rc, term2c), 1)
+        #u2 = [t2rr * mu[:,r] + t2rc * mu[:,c], t2c * mu[:,r].sum(dim=1)] 
+        u2r = self.t2rr.matmul(mu[:,:m]) + self.t2rc.matmul(mu[:,[m]]).repeat(1, m)
+        u2c = self.t2cr.matmul(C * mu[:,:m].sum(dim=1)).unsqueeze(1)
+        u2  = torch.cat((u2r, u2c), 1)
 
-        '''
-        term3 = [theta3rr * relu_rr + theta3rc * relu_rc,
-                 theta3cr * relu_cr]
-        '''
-        # ((m,p,1),(m,1,m))->(m,p,m)->(m,p)->(m,p,1)
-        relu_rr = F.relu(torch.bmm(self.theta4rr.unsqueeze(0).expand(m,-1,-1), W[:m,:m].unsqueeze(1))).sum(dim=2).unsqueeze(2)
-        # ((p,p)->(m,p,p),(m,p,1))->(m,p,1)->(m,p)->(p,m)
-        term3rr = torch.t(torch.bmm(self.theta3rr.expand(m,-1,-1), relu_rr).squeeze(2))
+        #u3 = [t3rr * relu_rr + t3rc * relu_rc, t3cr * relu_cr]
+        relu_rr = F.relu(torch.bmm(self.t4rr.unsqueeze(0).expand(m,-1,-1), W[:m,:m].unsqueeze(1))).sum(dim=2).unsqueeze(2) 
+        u3rr    = torch.t(torch.bmm(self.t3rr.expand(m,-1,-1), relu_rr).squeeze(2))
 
-        # ((p,1),(1,m))->(p,m)->(p,1)
-        relu_rc = F.relu(torch.ger(self.theta4rc.squeeze(1), W[m,:m].squeeze(0))).sum(dim=1).unsqueeze(1)
-        term3rc = self.theta3rc.matmul(relu_rc)
-        term3r  = term3rr + term3rc.expand(-1,m) 
+        relu_rc = F.relu(torch.ger(self.t4rc, W[m,:m].squeeze(0))).sum(dim=1).unsqueeze(1)
+        u3r     = u3rr + self.t4rc.matmul(relu_rc).expand(m) 
 
-        # ((p),(m))->(p,m)->(p,1)
-        relu_cr = F.relu(torch.ger(self.theta4cr.squeeze(1), W[:m,m])).sum(dim=1).unsqueeze(1)
-        term3cr = self.theta3cr.matmul(relu_cr)
-        term3   = torch.cat((term3r, term3cr), 1)
+        relu_cr = F.relu(torch.ger(self.t4cr, W[:m,m])).sum(dim=1).unsqueeze(1)
+        u3cr    = self.t3cr.matmul(relu_cr)
+        u3      = torch.cat((u3r, u3cr), 1)
 
-        return F.relu(term1 + term2 + term3)
+        return F.relu(u1 + u2 + u3)
 
-    def forward(self, lp_data):
-        '''
-        Forward pass
-        '''
+    def _forward_complete(self, item):
 
         # get inputs
-        A = lp_data['A']
-        b = lp_data['b']
-        c = lp_data['c']
-        node_features = lp_data['node_features'].type(self.dtype)
-        in_loss = lp_data['in_loss']
+        A = item['A']
+        b = item['b']
+        c = item['c']
+        node_feats = item['node_features'].type(self.dtype)
 
         m = max(list(b.size()))
-       
-        if True:
-            if self.with_cuda:
-                A = A.cuda()
-                b = b.cuda()
-                c = c.cuda()
-            Ab = torch.cat((A.squeeze(0), b.squeeze(0).unsqueeze(1)), 1)
-            Ab = torch.div(Ab, torch.max(torch.max(torch.abs(Ab),0)[0]))
-            c0 = torch.from_numpy(np.concatenate((c, np.zeros((1,1))), axis=1)).type(self.dtype)
-            c0 = torch.div(c0, torch.max(torch.abs(c0)))
-            G  = torch.cat((Ab.type(self.dtype), c0.type(self.dtype)), 0)
+
+        REDUCE_LOSS = False
+        if REDUCE_LOSS:
+            in_loss = list(range(m))
         else:
-            Ab = np.concatenate((A.squeeze(0), np.transpose(b)), axis=1)
-            Ab = Ab / np.max(np.absolute(Ab))
+            in_loss = item['in_loss']
+       
+        if self.on_cuda:
+            A  = A.cuda()
+            b  = b.cuda()
+            c  = c.cuda()
 
-            c0 = np.concatenate((c, np.zeros((1,1))), axis=1)
-            c0 = c0 / np.max(np.absolute(c0))
+        Ab = F.normalize(torch.cat((A.squeeze(0), b.squeeze(0).unsqueeze(1)), 1), p=2, dim=1)
+        c0 = torch.from_numpy(np.concatenate((c, np.zeros((1,1))), axis=1)).type(self.dtype)
+        G  = torch.cat((Ab.type(self.dtype), c0.type(self.dtype)), 0)
 
-            # Create single element from this
-            # G.shape = (m+1, n+1)
-            # W = G*G' will give the weights w(u,v)
-            G = np.concatenate((Ab, c0), axis=0)
+        if self.on_cuda:
+            G  = G.cuda()
+            node_feats = node_feats.cuda()
 
-            # Torchify
-            G = torch.from_numpy(G).type(self.dtype)
-            if self.with_cuda:
-                node_features = node_features.cuda()
-                G = G.cuda()
-
-        node_features = Variable(node_features)
+        node_feats = Variable(node_feats)
         G = Variable(G)
         W = torch.matmul(G, torch.transpose(G, 0, 1))
 
         # W = G*G' with zero diagonals
         mask = Variable(torch.eye(W.shape[0]))
-        if self.with_cuda:
+        if self.on_cuda:
             mask = mask.cuda()
         mask = torch.eq(mask, 1)
         W.masked_fill_(mask, 0)
@@ -223,34 +165,162 @@ class Model(nn.Module):
         # Initialise embeddings to None
         # [0, ..., m-1] : constraints 
         # [m]           : cost vector
-
         mu = Variable(torch.zeros(self.p,m+1).type(self.dtype))
-        if self.with_cuda:
+        if self.on_cuda:
             mu = mu.cuda()
 
         # structure2vec
         #   Create embeddings
         for t in range(self.T):
-            mu = self._s2v(mu, node_features, W, m)
+            mu = self._s2v_complete(mu, node_feats, W)
 
         # Features
-        # Sum of all columns
-        scale  = 1/(float(m))
-        term6  = self.theta6r.matmul(scale * mu[:,:m].sum(dim=1)) + self.theta6c.matmul(mu[:,m])
+        C  = 1/(float(m))
+        u6 = self.t6r.matmul(C * mu[:,:m].sum(dim=1)) + self.t6c.matmul(mu[:,m])
 
-        ALL_IN_LOSS = False
-        if ALL_IN_LOSS:
-            term7  = self.theta7.matmul(mu[:,:m])
-            feats  = F.relu(torch.cat((term6.unsqueeze(1).repeat(1,m), term7),0))
-            # ((m, 2, 2p), (m, 2p, 1))
-            scores = torch.bmm(self.theta8.unsqueeze(0).repeat(m,1,1), torch.t(feats).unsqueeze(2)).squeeze(2)
-        else:
-            term7  = self.theta7.matmul(mu[:,in_loss])
-            feats  = F.relu(torch.cat((term6.unsqueeze(1).repeat(1,len(in_loss)), term7),0))
-            # ((m, 2, 2p), (m, 2p, 1))
-            scores = torch.bmm(self.theta8.unsqueeze(0).repeat(len(in_loss),1,1), torch.t(feats).unsqueeze(2)).squeeze(2)
+        u7     = self.t7.matmul(mu[:,in_loss])
+        feats  = F.relu(torch.cat((u6.unsqueeze(1).repeat(1,len(in_loss)), u7),0))
+        scores = torch.bmm(self.t8.unsqueeze(0).repeat(len(in_loss),1,1), torch.t(feats).unsqueeze(2)).squeeze(2)
 
-        return scores
+        self.probs = self.softmax(scores)
+
+        return self.logsoftmax(scores)
+
+    def _init_bipartite(self):
+        p = self.p
+        C = math.sqrt(1/p)
+        K = lambda x : math.sqrt(1/x)
+
+        # Bias and node features
+        self.t0  = nn.Parameter(torch.randn(p,1).type(self.dtype), requires_grad=True)
+        self.t1c = nn.Parameter(K(4) * torch.randn(p,4).type(self.dtype), requires_grad=True)
+        self.t1v = nn.Parameter(torch.randn(p,1).type(self.dtype), requires_grad=True)
+
+        # Message passing: (embeddings)
+        self.t2c = nn.Parameter(C * torch.randn(p,p).type(self.dtype), requires_grad=True)
+        self.t2v = nn.Parameter(C * torch.randn(p,p).type(self.dtype), requires_grad=True)
+
+        # Message passing: (outer products)
+        self.t3c = nn.Parameter(C * torch.randn(1,p,p).type(self.dtype), requires_grad=True)
+        self.t3v = nn.Parameter(C * torch.randn(1,p,p).type(self.dtype), requires_grad=True)
+
+        self.t4c = nn.Parameter(C * torch.randn(1,p,1).type(self.dtype), requires_grad=True)
+        self.t4v = nn.Parameter(C * torch.randn(1,p,1).type(self.dtype), requires_grad=True)
+
+        # Features
+        self.t6c  = nn.Parameter(C * torch.randn(p,p).type(self.dtype), requires_grad=True)
+        self.t6v  = nn.Parameter(C * torch.randn(p,p).type(self.dtype), requires_grad=True)
+        self.t7   = nn.Parameter(C * torch.randn(p,p).type(self.dtype), requires_grad=True)
+
+        # Probabilities/Scores
+        self.t8 = nn.Parameter(K(2*p+4) * torch.randn(2,2*p+4).type(self.dtype), requires_grad=True)
+
+    def _s2v_bipartite(self, mu, c_feat, v_feat, A, adj):
+        # A is edge_feat
+
+        m,  n   = c_feat.shape[0], v_feat.shape[0]
+        Cm, Cn  = 1/float(m), 1/float(n)
+        Cm, Cn  = 1/float(math.sqrt(m)), 1/float(math.sqrt(n))
+        ic, iv  = list(range(0,m)), list(range(m,m+n))
+
+        C   = 1/float(m + n)
+
+        term1 = self.t0 + torch.cat((self.t1c.matmul(c_feat.t()), self.t1v.matmul(v_feat.t())), 1)
+
+        cadj  = F.normalize(adj, p=1, dim=0)
+        radj  = F.normalize(adj.t(), p=1, dim=0)
+        term2 = torch.cat((self.t2c.matmul(mu[:,ic].matmul(cadj)), self.t2v.matmul(mu[:,iv].matmul(radj))), 1)
+
+        # (m,p,1),(m,1,n) -> (m,p,n) -> (m,p)
+        # (m,p,p),(m,p,1) -> (m,p,1) -> (m,p)
+        relu  = F.relu(torch.bmm(self.t4c.expand(m,-1,-1), A.unsqueeze(1))).sum(dim=2)
+        u3c   = torch.bmm(self.t3c.expand(m,-1,-1), relu.unsqueeze(2)).squeeze(2).t()
+
+        relu  = F.relu(torch.bmm(self.t4v.expand(n,-1,-1), A.t().unsqueeze(1))).sum(dim=2)
+        u3v   = torch.bmm(self.t3v.expand(n,-1,-1), relu.unsqueeze(2)).squeeze(2).t()
+
+        term3 = torch.cat((u3c, u3v), 1)
+        if self.verbose:
+            print('\tterm1:  %g ' % (float(torch.max(torch.max(torch.abs(term1))))))
+            print('\tterm2:  %g ' % (float(torch.max(torch.max(torch.abs(term2))))))
+            print('\tu3c:  %g ' % (float(torch.max(torch.max(torch.abs(u3c))))))
+            print('\tu3v:  %g ' % (float(torch.max(torch.max(torch.abs(u3v))))))
+            print('\tterm3:  %g ' % (float(torch.max(torch.max(torch.abs(term3))))))
+
+        #return torch.clamp(F.relu(term1 + term2 + term3), -10.00, 10.00)
+        return F.relu(term1 + term2 + term3)
+
+    def _forward_bipartite(self, item):
+
+        # get inputs
+        c_feats = item['c_feats'] # is_inequality, rhs, is_bound
+        v_feats = item['v_feats'] # obj 
+        e_feats = item['e_feats'] # i, coeffs
+        in_loss = item['in_loss']
+        dims    = item['dims']
+
+        m, n    = int(dims['m']), int(dims['n']) 
+        C       = 1/float(m+n)
+
+        # mu
+        mu = Variable(torch.zeros(self.p,m+n).type(self.dtype))
+        if self.on_cuda:
+            mu = mu.cuda()
+
+        # squeeze
+        c_feats = Variable(c_feats)
+        v_feats = Variable(v_feats)
+
+        # e_feats
+        to_int  = lambda f : [int(f[i]) for i in range(len(f))]
+        i       = torch.LongTensor([to_int(f) for f in e_feats['i']])
+        v       = torch.FloatTensor([float(f) for f in e_feats['coeffs']])
+        A       = Variable(torch.sparse.FloatTensor(i.t(), v, torch.Size([m,n])).to_dense())
+
+        # adjacency
+        nnz     = len(e_feats['coeffs'])
+        v       = torch.FloatTensor([1] * nnz)
+        adj     = Variable(torch.sparse.FloatTensor(i.t(), v, torch.Size([m,n])).to_dense())
+
+        if self.on_cuda:
+            c_feats = c_feats.cuda()
+            v_feats = v_feats.cuda()
+            A       = A.cuda()
+            adj     = adj.cuda()
+
+        # Normalise
+        Ab           = F.normalize(torch.cat((A, -c_feats[:,1].unsqueeze(1)), 1), p=2, dim=1)
+        A            = Ab[:,:n]
+        c_feats[:,1] = -Ab[:,n]
+
+        ## Add cosine and cosine/b to features.
+        cosines = torch.matmul(A, v_feats[:,0])
+        c_feats = torch.cat((c_feats, cosines.unsqueeze(1)), 1)
+
+        # structure2vec
+        #   Create embeddings
+        for t in range(self.T):
+            mu = self._s2v_bipartite(mu, c_feats, v_feats, A, adj)
+
+        # Features
+        Cm, Cn  = 1/float(math.sqrt(m)), 1/float(math.sqrt(n))
+        Cm, Cn  = 1/float(m), 1/float(n)
+        ic, iv  = list(range(0,m)), list(range(m,m+n))
+
+        u6      = self.t6c.matmul(Cm * mu[:,ic].sum(dim=1)) + self.t6v.matmul(Cn * mu[:,iv].sum(dim=1))
+        embed   = F.relu(torch.cat((u6.unsqueeze(1).expand(-1,len(in_loss)), self.t7.matmul(mu[:,in_loss])),0))
+        embed   = torch.cat((embed, c_feats[in_loss,:].t()), 0)
+        scores  = self.t8.matmul(embed).t()
+
+        self.probs = self.softmax(scores)
+        if self.verbose:
+            print('\tu6:  %g ' % (float(torch.max(torch.max(torch.abs(u6))))))
+            print('\tembed:  %g ' % (float(torch.max(torch.max(torch.abs(embed))))))
+            print('\tscores:  %g ' % (float(torch.max(torch.max(torch.abs(scores))))))
+            print('\tmin probs:  %g ' % (float(torch.min(torch.min(self.probs)))))
+            print('\tmax probs:  %g ' % (float(torch.max(torch.max(self.probs)))))
+
+        return self.logsoftmax(scores)
 
 if __name__ == '__main__':
     from data.plnn_dataset import DatasetPLNN
